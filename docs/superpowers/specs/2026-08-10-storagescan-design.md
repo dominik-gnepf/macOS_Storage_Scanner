@@ -192,11 +192,31 @@ unreliable on macOS with `noatime`-like behavior and is not trusted.
 
 ### `safety.py`
 
-Pure classification. `classify(path, category) -> Risk` decides what the
-delete action is permitted to touch, with a hard `BLOCKED` floor for `$HOME`
-itself, `/`, volume roots, `~/Documents`, `~/Desktop`, and anything outside the
-configured scan paths. Deletion policy — strict allowlist vs. tiered risk with
-escalating confirmation — is decided here and nowhere else.
+Pure classification. `classify(path, category) -> Risk` decides what the delete
+action is permitted to touch. It performs no I/O: path and category in, `Risk`
+out. This is the only place deletion policy is expressed.
+
+**Policy: tiered risk with escalating confirmation.** Every path is deletable
+except the blocked floor; the confirmation cost scales with the consequences.
+
+| Risk | Meaning | Confirmation required |
+|---|---|---|
+| `SAFE` | Regenerable by a tool or re-download: caches, `DerivedData`, package stores, Trash | single `y` |
+| `REVIEW` | User data that is probably disposable: `~/Downloads`, old installers, stale large files, duplicates | `y`, shown with size and mtime recap |
+| `DANGER` | Looks irreplaceable: media libraries, documents, anything not matched by a probe | retype the full path verbatim |
+| `BLOCKED` | Never deletable by this tool | no prompt offered |
+
+The `BLOCKED` floor, matched as exact directories rather than prefixes so that
+descendants remain classifiable (`~/Library` is blocked, `~/Library/Caches/…`
+is not): `$HOME`, `/`, any volume root, `~/Documents`, `~/Desktop`,
+`~/Library`, and `~/Applications`. Additionally blocked regardless of depth:
+any path outside the configured scan paths, any symlink, and any path that
+resolves above a scan root after `os.path.realpath` normalization.
+
+Classification is conservative by default: a path with no matching probe is
+`DANGER`, never `SAFE`. Risk is never inferred from file size or extension —
+only from location and probe category — so a large file in a cache directory is
+`SAFE` and a small file in `~/Movies` is `DANGER`.
 
 ### `actions.py`
 
