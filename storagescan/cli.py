@@ -10,6 +10,7 @@ import sys
 import time
 from typing import List, Optional, Tuple
 
+from . import access
 from . import actions
 from . import config as config_module
 from . import monitor
@@ -19,6 +20,7 @@ from .model import Node, Risk, ScanError, ScanResult
 from .scan import aging, apfs, cloud, dupes, probes, system, walker
 from .scan.index import SizeIndex
 from .ui import report as report_module
+from .ui import menu as menu_ui
 from .ui import term
 
 EXIT_OK = 0
@@ -30,12 +32,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="storagescan",
         description="Find where your macOS disk space went.",
-        epilog="Nothing is deleted without you confirming it, and deletions "
-               "go to the Trash unless you pass --purge.",
+        epilog="Run with no options for a menu. Nothing is ever deleted "
+               "without you confirming it, and deletions go to the Trash.",
     )
     parser.add_argument("--deep", action="store_true",
                         help="unlimited depth, plus duplicate and stale-file "
                              "analysis (slower)")
+    parser.add_argument("--menu", action="store_true",
+                        help="show the menu (the default when run with no "
+                             "options)")
+    parser.add_argument("--no-menu", action="store_true",
+                        help="skip the menu and scan straight away")
     parser.add_argument("--summary", action="store_true",
                         help="print a text summary instead of opening the browser")
     parser.add_argument("--report", action="store_true",
@@ -365,6 +372,25 @@ def _print_diff(previous: ScanResult, current: ScanResult, home: str) -> None:
     print("")
 
 
+# Flags that express a specific intention. If any is present the user has
+# already said what they want, so putting a menu in front of them would be
+# an obstacle rather than a front door.
+_DIRECT_FLAGS = (
+    "deep", "summary", "report", "json", "cached", "diff", "reclaim",
+    "check", "install_agent", "uninstall_agent", "agent_status", "dry_run",
+)
+
+
+def wants_menu(args) -> bool:
+    if args.no_menu:
+        return False
+    if args.menu:
+        return True
+    if not sys.stdout.isatty() or not sys.stdin.isatty():
+        return False
+    return not any(getattr(args, name, False) for name in _DIRECT_FLAGS)
+
+
 def launcher_path() -> str:
     """Absolute path to the bin/storagescan launcher for this checkout.
 
@@ -433,6 +459,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             fast_depth=cfg.fast_depth, large_file_bytes=cfg.large_file_bytes,
             stale_days=cfg.stale_days, trash_by_default=cfg.trash_by_default)
 
+    # Before any scanning: the menu is the front door, and it offers "scan"
+    # as one of its choices. Reaching it only after a 60-second scan would
+    # defeat the point.
+    if wants_menu(args):
+        return run_menu(cfg, args, home=home)
+
     previous = serialize.load_cached(args.cache_file)
 
     if args.cached:
@@ -499,3 +531,99 @@ def main(argv: Optional[List[str]] = None) -> int:
     from .ui import tui
     tui.run(result, home=home, config=cfg)
     return EXIT_OK
+
+
+def _menu_scan(cfg, args, home: str, deep: bool):
+    """Run a scan for a menu action, reusing the normal code path."""
+    scan_args = build_parser().parse_args([])
+    scan_args.deep = deep
+    scan_args.workers = args.workers
+    scan_args.include_cloud = args.include_cloud
+    scan_args.no_system = args.no_system
+    scan_args.path = args.path
+    progress = make_progress(sys.stderr, home, enabled=not args.no_progress)
+    result = run_scan(cfg, scan_args, home=home, now=time.time(),
+                      progress=progress)
+    serialize.save(result, args.cache_file)
+    return result
+
+
+def run_menu(cfg, args, *, home: str, stdin=None, stdout=None) -> int:
+    """The interactive front door."""
+    stdin = stdin or sys.stdin
+    stdout = stdout or sys.stdout
+    result = serialize.load_cached(args.cache_file)
+    status = ""
+
+    while True:
+        print(menu_ui.render(result, now=time.time(),
+                             color=not args.no_color, status=status),
+              file=stdout)
+        status = ""
+        print("  Choose: ", end="", file=stdout, flush=True)
+        raw = stdin.readline()
+        if not raw:                     # EOF, e.g. piped input
+            return EXIT_OK
+        choice = menu_ui.parse_choice(raw)
+
+        if choice is None:
+            status = "Sorry, I did not understand that."
+            continue
+
+        if choice.action == "quit":
+            return EXIT_OK
+
+        if choice.action in ("scan", "deep"):
+            result = _menu_scan(cfg, args, home, deep=choice.action == "deep")
+            status = "Scan finished in {:.0f}s.".format(result.duration)
+            continue
+
+        if choice.action == "browse":
+            if result is None:
+                status = "Nothing scanned yet — choose 1 first."
+                continue
+            from .ui import tui
+            tui.run(result, home=home, config=cfg)
+            continue
+
+        if choice.action == "report":
+            if result is None:
+                status = "Nothing scanned yet — choose 1 first."
+                continue
+            path = report_module.write(result, home=home,
+                                       generated_at=time.time(),
+                                       path=args.report_file)
+            if not args.no_open:
+                _open_file(path)
+            status = "Report saved to {}".format(redact(path, home))
+            continue
+
+        if choice.action == "reclaim":
+            if result is None:
+                status = "Nothing scanned yet — choose 1 first."
+                continue
+            run_reclaim(result, cfg, args, home=home, stdin=stdin,
+                        stdout=stdout)
+            # Sizes are stale the moment anything is removed.
+            result = None
+            status = "Scan again to see the updated figures."
+            continue
+
+        if choice.action == "access":
+            print("", file=stdout)
+            print(access.instructions(home), file=stdout)
+            print("", file=stdout)
+            access.open_settings()
+            status = "System Settings opened. Reopen your terminal afterwards."
+            continue
+
+        if choice.action == "monitor":
+            if monitor.is_installed(home):
+                _ok, message = monitor.uninstall(home=home)
+                status = "Weekly warning removed ({}).".format(message)
+            else:
+                ok, message = monitor.install(launcher=launcher_path(),
+                                              home=home)
+                status = ("Weekly warning installed." if ok
+                          else "Could not install: {}".format(message))
+            continue

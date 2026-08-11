@@ -36,10 +36,41 @@ Safe to reclaim now: 36.5 GB
 ```bash
 git clone https://github.com/dominik-gnepf/macOS_Storage_Scanner.git
 cd macOS_Storage_Scanner
-./bin/storagescan
+./install.sh          # optional: puts `macosscanner` on your PATH
+macosscanner
 ```
 
-A fast scan takes about 30 seconds on a full 250 GB disk, then opens an
+`install.sh` only creates a symlink — nothing is copied or compiled, and you
+can undo it by deleting the link it prints. Without it, run `./bin/macosscanner`
+from the checkout.
+
+Running it with no arguments opens the menu:
+
+```
+  macOS Storage Scanner
+
+  Disk         11.8 GB free of 245.1 GB   (95% used)
+  Full access  not granted — parts of your home folder are hidden, so the
+               totals below are too low
+  Last scan    4 min ago (fast scan)
+  Reclaimable  36.1 GB in caches and build files
+
+  1  Scan now                 find what is using space (about a minute)
+  2  Browse the last scan     open the interactive browser (instant)
+  3  Reclaim safe space       review caches and build files, then Trash them
+  4  Save an HTML report      a shareable page with a treemap
+  5  Deep scan                also find duplicate and long-untouched files
+  6  Grant Full Disk Access   open the right System Settings pane
+  7  Weekly early warning     get notified before the disk fills up
+  q  Quit
+
+  Choose:
+```
+
+Type the number, or the word — `3`, `reclaim` and `rec` all work. Every flag
+below still works too, and passing any of them skips the menu.
+
+A fast scan takes about a minute on a full 250 GB disk. Option 2 opens the
 interactive browser:
 
 ```
@@ -61,20 +92,20 @@ Press `d` to delete the selected item, with confirmation scaled to the risk.
 ## Usage
 
 ```
-storagescan                 fast scan, then the interactive browser
-storagescan --deep          unlimited depth, plus duplicates and stale files
-storagescan --summary       plain text summary instead of the browser
-storagescan --report        write the HTML report and open it
-storagescan --json          machine-readable output
-storagescan --cached        reuse the previous scan, instantly
-storagescan --diff          show what grew since the last scan
-storagescan --path DIR      scan a specific directory (repeatable)
-storagescan --reclaim       review every SAFE cache, then Trash them all at once
-storagescan --include-cloud scan OneDrive/iCloud too (slow; may download files)
-storagescan --no-system     skip /Applications, /Library etc (~25s faster)
-storagescan --dry-run       never modify anything
-storagescan --workers N     parallel scan threads (default 8)
-storagescan --no-progress   suppress the scanning progress line
+macosscanner                fast scan, then the interactive browser
+macosscanner --deep          unlimited depth, plus duplicates and stale files
+macosscanner --summary       plain text summary instead of the browser
+macosscanner --report        write the HTML report and open it
+macosscanner --json          machine-readable output
+macosscanner --cached        reuse the previous scan, instantly
+macosscanner --diff          show what grew since the last scan
+macosscanner --path DIR      scan a specific directory (repeatable)
+macosscanner --reclaim       review every SAFE cache, then Trash them all at once
+macosscanner --include-cloud scan OneDrive/iCloud too (slow; may download files)
+macosscanner --no-system     skip /Applications, /Library etc (~25s faster)
+macosscanner --dry-run       never modify anything
+macosscanner --workers N     parallel scan threads (default 8)
+macosscanner --no-progress   suppress the scanning progress line
 ```
 
 ### Reclaiming in bulk
@@ -106,9 +137,9 @@ agent that checks in the background and notifies you only when free space
 drops below a threshold:
 
 ```bash
-storagescan --install-agent          # weekly check, 20 GB default threshold
-storagescan --agent-status           # is it installed and loaded?
-storagescan --uninstall-agent        # removes the agent and its plist
+macosscanner --install-agent          # weekly check, 20 GB default threshold
+macosscanner --agent-status           # is it installed and loaded?
+macosscanner --uninstall-agent        # removes the agent and its plist
 ```
 
 The notification names the problem and the opportunity together:
@@ -128,7 +159,7 @@ Details worth knowing:
 - Output goes to `~/.local/state/storagescan/monitor.log`.
 - Change the threshold with `--alert-below 30` (in GB).
 
-You can run the check by hand at any time with `storagescan --check`.
+You can run the check by hand at any time with `macosscanner --check`.
 
 ## Full Disk Access
 
@@ -138,8 +169,15 @@ directories that plainly exist. `storagescan` detects this, warns you, marks
 the scan `INCOMPLETE`, and keeps going rather than reporting a confident wrong
 number.
 
-To grant it: **System Settings → Privacy & Security → Full Disk Access**, add
-your terminal app, then restart the terminal.
+Menu option **6** opens the right System Settings pane for you and prints the
+exact steps, naming your actual terminal app rather than a generic
+instruction.
+
+No program can grant itself Full Disk Access — that is the entire point of the
+permission. What matters, and what trips people up: the permission belongs to
+**the terminal app that runs the scanner**, not to the scanner script. Add
+Terminal, iTerm, VS Code or whatever you launched it from, then quit and
+reopen that app.
 
 ## What it looks for
 
@@ -253,7 +291,7 @@ Optional, at `~/.config/storagescan/config.json`:
 python3 -m unittest discover -s tests -t . -v
 ```
 
-332 tests, no dependencies, no build step, no virtualenv. `safety.py` is pure
+362 tests, no dependencies, no build step, no virtualenv. `safety.py` is pure
 and carries an exhaustive table test — if you change deletion policy, that is
 the file and those are the tests.
 
