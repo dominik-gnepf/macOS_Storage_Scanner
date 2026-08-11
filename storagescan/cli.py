@@ -63,16 +63,29 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def check_fda(home: str) -> bool:
-    """True when protected locations are readable, or simply absent.
+PROTECTED_DIRS = ("Library/Mail", "Library/Messages", "Downloads",
+                  "Documents", "Desktop")
 
-    macOS hides several directories from processes without Full Disk Access —
-    and it does so by returning EPERM on readdir, not by hiding their
-    existence. Probing a couple of them is the only reliable signal.
+
+def check_fda(home: str, roots: Tuple[str, ...] = ()) -> bool:
+    """True when the protected locations *in scope* are readable.
+
+    macOS hides these directories from processes without Full Disk Access, and
+    it does so by returning EPERM on readdir rather than by hiding their
+    existence — so probing is the only reliable signal.
+
+    Only paths inside ``roots`` are probed. Warning that a scan is incomplete
+    because ~/Downloads is unreadable makes no sense when the user asked for
+    ~/Developer. An empty ``roots`` probes everything, for callers with no
+    scope of their own.
     """
-    for relative in ("Library/Mail", "Library/Messages", "Downloads"):
+    for relative in PROTECTED_DIRS:
         path = os.path.join(home, relative)
         if not os.path.exists(path):
+            continue
+        if roots and not any(
+                path == r.rstrip("/") or path.startswith(r.rstrip("/") + "/")
+                for r in roots):
             continue
         try:
             os.listdir(path)
@@ -168,8 +181,9 @@ def run_scan(cfg, args, *, home: str, now: float) -> ScanResult:
         errors=tuple(errors),
         mode="deep" if args.deep else "fast",
         duration=time.time() - started,
-        fda_ok=check_fda(home),
+        fda_ok=check_fda(home, roots),
         started_at=started,
+        roots=roots,
     )
 
 

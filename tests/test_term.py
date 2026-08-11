@@ -28,16 +28,30 @@ def result(**overrides):
 
 class UnaccountedTest(unittest.TestCase):
     def test_gap_between_volume_and_scan(self):
-        self.assertEqual(term.unaccounted(result()),
+        self.assertEqual(term.unaccounted(result(), HOME),
                          160_000_000_000 - 1_000_000_000)
 
     def test_no_gap_when_scan_exceeds_volume_usage(self):
         big = Node(path=HOME, size=999_000_000_000, apparent=1, count=1, mtime=0.0)
-        self.assertIsNone(term.unaccounted(result(root=big)))
+        self.assertIsNone(term.unaccounted(result(root=big), HOME))
 
     def test_none_without_a_volume_or_root(self):
-        self.assertIsNone(term.unaccounted(result(volumes=())))
-        self.assertIsNone(term.unaccounted(result(root=None)))
+        self.assertIsNone(term.unaccounted(result(volumes=()), HOME))
+        self.assertIsNone(term.unaccounted(result(root=None), HOME))
+
+
+class UnaccountedScopeTest(unittest.TestCase):
+    def test_suppressed_when_the_scan_did_not_cover_home(self):
+        # After --path ~/Developer the "gap" is just the rest of the disk.
+        narrowed = result(roots=(HOME + "/Developer",))
+        self.assertIsNone(term.unaccounted(narrowed, HOME))
+
+    def test_reported_when_the_scan_covered_home(self):
+        self.assertIsNotNone(term.unaccounted(result(roots=(HOME,)), HOME))
+
+    def test_reported_when_roots_are_unknown(self):
+        # Scans cached before roots were recorded still get an answer.
+        self.assertIsNotNone(term.unaccounted(result(roots=()), HOME))
 
 
 class RenderTest(unittest.TestCase):

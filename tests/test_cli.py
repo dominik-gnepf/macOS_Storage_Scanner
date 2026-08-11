@@ -62,6 +62,23 @@ class CheckFdaTest(unittest.TestCase):
         self.addCleanup(os.chmod, blocked, stat.S_IRWXU)
         self.assertFalse(cli.check_fda(self.home))
 
+    def test_out_of_scope_protected_dir_is_not_probed(self):
+        # --path ~/Developer must not warn about ~/Downloads.
+        blocked = os.path.join(self.home, "Downloads")
+        os.makedirs(blocked)
+        os.chmod(blocked, 0)
+        self.addCleanup(os.chmod, blocked, stat.S_IRWXU)
+        developer = os.path.join(self.home, "Developer")
+        os.makedirs(developer)
+        self.assertTrue(cli.check_fda(self.home, (developer,)))
+
+    def test_in_scope_protected_dir_is_still_probed(self):
+        blocked = os.path.join(self.home, "Downloads")
+        os.makedirs(blocked)
+        os.chmod(blocked, 0)
+        self.addCleanup(os.chmod, blocked, stat.S_IRWXU)
+        self.assertFalse(cli.check_fda(self.home, (self.home,)))
+
 
 class RunScanTest(unittest.TestCase):
     def setUp(self):
@@ -82,6 +99,9 @@ class RunScanTest(unittest.TestCase):
         self.assertIsNotNone(result.root)
         self.assertEqual(result.mode, "fast")
         self.assertTrue(result.findings)
+
+    def test_roots_are_recorded_on_the_result(self):
+        self.assertEqual(self.scan([]).roots, (self.home,))
 
     def test_deep_mode_is_labelled(self):
         self.assertEqual(self.scan(["--deep"]).mode, "deep")

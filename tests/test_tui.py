@@ -113,35 +113,105 @@ class TreeStateTest(unittest.TestCase):
         self.assertEqual(state.breadcrumb(HOME), "(no scan)")
 
 
+class PercentageBaseTest(unittest.TestCase):
+    def test_tree_base_is_the_current_directory_total(self):
+        state = tui.TreeState(result())
+        self.assertEqual(state.percentage_base(), 1000)
+        state.enter()
+        self.assertEqual(state.percentage_base(), 900)
+
+    def test_findings_base_is_total_reclaimable(self):
+        state = tui.TreeState(result())
+        state.toggle_view()
+        self.assertEqual(state.percentage_base(), 1000)
+
+    def test_base_is_zero_without_a_scan(self):
+        self.assertEqual(tui.TreeState(ScanResult(root=None)).percentage_base(), 0)
+
+
 class FormatRowTest(unittest.TestCase):
+    def row(self, item, **kw):
+        kw.setdefault("home", HOME)
+        kw.setdefault("total", 1000)
+        kw.setdefault("scale", 1000)
+        kw.setdefault("width", 70)
+        return tui.format_row(item, **kw)
+
     def test_includes_size_bar_and_name(self):
         node = Node(path=HOME + "/Library", size=900, apparent=900,
                     count=5, mtime=0.0)
-        row = tui.format_row(node, home=HOME, total=1000, width=70)
+        row = self.row(node)
         self.assertIn("Library", row)
         self.assertIn("900 B", row)
         self.assertIn("90%", row)
         self.assertLessEqual(len(row), 70)
 
-    def test_findings_show_their_risk_marker(self):
+    def test_percentage_uses_total_not_scale(self):
+        # The biggest row must not read 100% just for being the biggest.
+        node = Node(path=HOME + "/a", size=500, apparent=500, count=1, mtime=0.0)
+        self.assertIn("50%", self.row(node, total=1000, scale=500))
+
+    def test_bar_is_full_for_the_largest_row(self):
+        node = Node(path=HOME + "/a", size=500, apparent=500, count=1, mtime=0.0)
+        row = self.row(node, total=1000, scale=500)
+        self.assertNotIn(".", row.split("  ")[2])
+
+    def test_findings_show_their_risk_marker_and_path(self):
         finding = Finding("downloads", "Downloads", HOME + "/Downloads",
                           100, Risk.REVIEW)
-        self.assertIn("REVW", tui.format_row(finding, home=HOME, total=100,
-                                             width=70))
+        row = self.row(finding, total=100, scale=100, width=90)
+        self.assertIn("REVW", row)
+        self.assertIn("~/Downloads", row)
 
-    def test_zero_total_does_not_divide_by_zero(self):
+    def test_pathless_finding_falls_back_to_detail(self):
+        finding = Finding("apfs.snapshot", "Snapshot", None, 0, Risk.REVIEW,
+                          "com.apple.TimeMachine.x")
+        self.assertIn("com.apple.TimeMachine.x",
+                      self.row(finding, total=0, scale=0, width=90))
+
+    def test_zero_total_and_scale_do_not_divide_by_zero(self):
         node = Node(path=HOME + "/x", size=0, apparent=0, count=0, mtime=0.0)
-        self.assertIn("0%", tui.format_row(node, home=HOME, total=0, width=70))
+        self.assertIn("0%", self.row(node, total=0, scale=0))
 
-    def test_long_names_are_truncated_to_width(self):
+    def test_long_names_are_truncated_keeping_the_tail(self):
         node = Node(path=HOME + "/" + "n" * 200, size=1, apparent=1,
                     count=1, mtime=0.0)
-        row = tui.format_row(node, home=HOME, total=10, width=60)
+        row = self.row(node, total=10, scale=10, width=60)
         self.assertLessEqual(len(row), 60)
+
+    def test_title_is_dropped_before_the_path_is_mangled(self):
+        # Eight findings can share the title "Application caches"; only the
+        # path tells them apart, so the path must survive intact.
+        finding = Finding("app.cache", "Application caches",
+                          HOME + "/Library/Caches/Cypress", 100, Risk.SAFE)
+        # 80 columns fits the path but not "title  path", so the title goes.
+        row = self.row(finding, total=100, scale=100, width=80)
+        self.assertIn("~/Library/Caches/Cypress", row)
+        self.assertNotIn("Application", row)
+
+    def test_path_too_long_for_the_row_is_tail_truncated(self):
+        finding = Finding("app.cache", "Application caches",
+                          HOME + "/Library/Caches/Cypress", 100, Risk.SAFE)
+        row = self.row(finding, total=100, scale=100, width=68)
+        self.assertTrue(row.endswith("Caches/Cypress"))
+        self.assertLessEqual(len(row), 68)
+
+    def test_title_and_path_both_shown_when_they_fit(self):
+        finding = Finding("app.cache", "Caches", HOME + "/x", 100, Risk.SAFE)
+        row = self.row(finding, total=100, scale=100, width=90)
+        self.assertIn("Caches  ~/x", row)
+
+    def test_long_finding_path_keeps_the_distinguishing_end(self):
+        finding = Finding("app.cache", "Application caches",
+                          HOME + "/Library/Caches/" + "x" * 60 + "/DistinctName",
+                          100, Risk.SAFE)
+        row = self.row(finding, total=100, scale=100, width=70)
+        self.assertIn("DistinctName", row)
+        self.assertLessEqual(len(row), 70)
 
     def test_narrow_width_still_produces_a_line(self):
         node = Node(path=HOME + "/x", size=5, apparent=5, count=1, mtime=0.0)
-        row = tui.format_row(node, home=HOME, total=10, width=MIN_WIDTH)
+        row = self.row(node, total=10, scale=10, width=MIN_WIDTH)
         self.assertLessEqual(len(row), MIN_WIDTH)
 
 

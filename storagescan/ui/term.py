@@ -35,15 +35,21 @@ FDA_STEPS = (
 )
 
 
-def unaccounted(result: ScanResult) -> Optional[int]:
+def unaccounted(result: ScanResult, home: str) -> Optional[int]:
     """Volume bytes the scan could not attribute to any scanned path.
 
     This is the honest replacement for a purgeable-space figure: macOS exposes
     no supported way to read purgeable from the command line, but the gap
     between what the volume reports as used and what the scan could see is
-    both measurable and exactly the number people are looking for when the
-    folder sizes do not add up.
+    both measurable and exactly the number people want when the folder sizes
+    do not add up.
+
+    It is only meaningful for a scan that covered the home directory. After
+    ``--path ~/Developer`` the "gap" is just everything else on the disk, so
+    None is returned rather than an alarming and useless number.
     """
+    if result.roots and not result.covers(home):
+        return None
     volume = primary_volume(result.volumes)
     if volume is None or result.root is None:
         return None
@@ -73,7 +79,7 @@ def render(result: ScanResult, *, home: str, color: bool = True) -> str:
             human_bytes(volume.total),
             human_bytes(volume.used),
         ))
-        gap = unaccounted(result)
+        gap = unaccounted(result, home)
         if gap:
             lines.append(paint(
                 "  {} used but not attributable to scanned files — usually "

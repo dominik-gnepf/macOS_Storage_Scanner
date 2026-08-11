@@ -92,31 +92,61 @@ class TreeState:
         node = self.current_dir()
         return redact(node.path, home) if node is not None else "(no scan)"
 
+    def percentage_base(self) -> int:
+        """The whole that each row's percentage is a share of.
+
+        In the tree that is the directory being listed, so the numbers answer
+        "how much of this folder is that". In the findings list it is the sum
+        of everything reclaimable, so they answer "how much of the win is
+        that". Using the largest row instead would print 100% on row one in
+        every view.
+        """
+        if self.view == "findings":
+            return sum(f.bytes_ for f in self.result.findings)
+        node = self.current_dir()
+        return node.size if node is not None else 0
+
 
 def row_size(row) -> int:
     return row.bytes_ if isinstance(row, Finding) else row.size
 
 
-def format_row(row, *, home: str, total: int, width: int) -> str:
-    """One display line, guaranteed to fit inside ``width``."""
+def format_row(row, *, home: str, total: int, scale: int, width: int) -> str:
+    """One display line, guaranteed to fit inside ``width``.
+
+    ``total`` is the denominator for the percentage — the whole the row is a
+    part of. ``scale`` is the largest row on screen and only sizes the bar, so
+    small entries stay visible instead of all rendering as an empty bar. Using
+    one number for both would make the first row read 100% every time.
+    """
     size = row_size(row)
+    pct = int(round(100.0 * size / total)) if total else 0
+    bar_width = max(6, min(24, width - 46))
+    filled = int(round(bar_width * (size / scale))) if scale else 0
+    filled = max(0, min(bar_width, filled))
+    bar = "#" * filled + "." * (bar_width - filled)
+
     if isinstance(row, Finding):
-        label = row.title
         mark = RISK_MARK[row.risk] + " "
+    else:
+        mark = ""
+    prefix = "{}{:>10}  {}  {:>3}%  ".format(mark, human_bytes(size), bar, pct)
+    room = max(0, width - len(prefix))
+
+    if isinstance(row, Finding):
+        where = redact(row.path, home) if row.path else row.detail
+        # The path identifies the row — eight entries all say "Application
+        # caches". So show "title  path" when both fit, and drop the title
+        # rather than serve half of each.
+        combined = "{}  {}".format(row.title, where) if where else row.title
+        label = combined if len(combined) <= room else (where or row.title)
     else:
         redacted = redact(row.path, home)
         label = os.path.basename(redacted) or redacted
-        mark = ""
 
-    pct = int(round(100.0 * size / total)) if total else 0
-    bar_width = max(6, min(24, width - 46))
-    filled = int(round(bar_width * (pct / 100.0)))
-    bar = "#" * filled + "." * (bar_width - filled)
-
-    prefix = "{}{:>10}  {}  {:>3}%  ".format(mark, human_bytes(size), bar, pct)
-    room = max(0, width - len(prefix))
     if len(label) > room:
-        label = label[:max(0, room - 1)] + "~"
+        # Keep the tail: for a path, the end identifies it, not the start.
+        label = ("~" + label[-(room - 1):]) if room > 1 else ""
     return (prefix + label)[:width]
 
 
@@ -189,14 +219,16 @@ def _draw(stdscr, state: TreeState, home: str, status: str) -> None:
     stdscr.addnstr(1, 0, subtitle.ljust(width - 1), width - 1, curses.A_DIM)
 
     rows = state.rows()
-    total = max((row_size(r) for r in rows), default=0)
+    scale = max((row_size(r) for r in rows), default=0)
+    total = state.percentage_base()
     body_height = max(1, height - 4)
     start = max(0, state.index - body_height + 1)
 
     if not rows:
         stdscr.addnstr(3, 2, "Nothing to show here.", width - 3)
     for offset, row in enumerate(rows[start:start + body_height]):
-        line = format_row(row, home=home, total=total, width=width - 1)
+        line = format_row(row, home=home, total=total, scale=scale,
+                          width=width - 1)
         attr = curses.A_REVERSE if start + offset == state.index else curses.A_NORMAL
         stdscr.addnstr(2 + offset, 0, line.ljust(width - 1), width - 1, attr)
 

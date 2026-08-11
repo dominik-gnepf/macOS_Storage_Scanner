@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .model import Finding, Node, Risk, ScanError, ScanResult, VolumeInfo
 
-SCHEMA = 1
+SCHEMA = 2
 
 # CPython's json encoder and decoder recurse once per nesting level, and a
 # node tree nests as deeply as the directory tree. macOS caps a path at
@@ -96,6 +96,7 @@ def dumps(result: ScanResult) -> str:
         "errors": [{"path": e.path, "error": e.error} for e in result.errors],
         "mode": result.mode, "duration": result.duration,
         "fda_ok": result.fda_ok, "started_at": result.started_at,
+        "roots": list(result.roots),
     }
     with _deep_recursion():
         return json.dumps(payload)
@@ -128,6 +129,7 @@ def loads(text: str) -> ScanResult:
         duration=payload.get("duration", 0.0),
         fda_ok=payload.get("fda_ok", True),
         started_at=payload.get("started_at", 0.0),
+        roots=tuple(payload.get("roots", [])),
     )
 
 

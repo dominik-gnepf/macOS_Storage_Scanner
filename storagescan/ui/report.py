@@ -189,7 +189,7 @@ def render(result: ScanResult, *, home: str, generated_at: float) -> str:
                  .format(human_bytes(result.reclaimable(Risk.SAFE))))
     cards.append('<div class="card"><b>{}</b><span>with review</span></div>'
                  .format(human_bytes(result.reclaimable(Risk.SAFE, Risk.REVIEW))))
-    gap = unaccounted(result)
+    gap = unaccounted(result, home)
     if gap:
         cards.append('<div class="card"><b>{}</b><span>unaccounted</span></div>'
                      .format(human_bytes(gap)))

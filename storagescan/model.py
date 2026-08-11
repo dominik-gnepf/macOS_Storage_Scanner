@@ -73,6 +73,17 @@ class ScanResult:
     duration: float = 0.0
     fda_ok: bool = True
     started_at: float = 0.0
+    # What was actually scanned. Views need this to know which statements are
+    # meaningful: "N GB unaccounted for on this volume" is informative after a
+    # whole-home scan and misleading after `--path ~/Developer`.
+    roots: Tuple[str, ...] = ()
+
+    def covers(self, path: str) -> bool:
+        for root in self.roots:
+            root = root.rstrip("/")
+            if path == root or path.startswith(root + "/"):
+                return True
+        return False
 
     def reclaimable(self, *risks: Risk) -> int:
         wanted = set(risks) or {Risk.SAFE}
