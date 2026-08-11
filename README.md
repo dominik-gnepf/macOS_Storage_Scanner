@@ -19,7 +19,7 @@ Reclaimable
       6.1 GB  SAFE      iOS DeviceSupport
               ~/Library/Developer/Xcode/iOS DeviceSupport
 
-Safe to reclaim now: 37.9 GB
+Safe to reclaim now: 36.5 GB
 ```
 
 - **Zero install.** Python 3.9 standard library only — nothing to `pip install`.
@@ -69,10 +69,33 @@ storagescan --json          machine-readable output
 storagescan --cached        reuse the previous scan, instantly
 storagescan --diff          show what grew since the last scan
 storagescan --path DIR      scan a specific directory (repeatable)
+storagescan --reclaim       review every SAFE cache, then Trash them all at once
 storagescan --include-cloud scan OneDrive/iCloud too (slow; may download files)
 storagescan --dry-run       never modify anything
 storagescan --workers N     parallel scan threads (default 8)
+storagescan --no-progress   suppress the scanning progress line
 ```
+
+### Reclaiming in bulk
+
+`--reclaim` lists every finding in the SAFE tier, shows the total, and moves
+them all to the Trash after a single confirmation:
+
+```
+These 21 items are caches and build products that regenerate themselves:
+
+     14.8 GB  ~/Library/Developer/CoreSimulator/Devices
+      7.9 GB  ~/.npm
+      6.1 GB  ~/Library/Developer/Xcode/iOS DeviceSupport
+      ...
+     36.5 GB  total
+
+Move all 21 to the Trash? [y/N]
+```
+
+It refuses to touch anything outside the SAFE tier even if a finding claims
+otherwise — every path still goes through `safety.classify` individually.
+Add `--dry-run` to see the list without being asked anything.
 
 ## Full Disk Access
 
@@ -156,7 +179,7 @@ Optional, at `~/.config/storagescan/config.json`:
 python3 -m unittest discover -s tests -t . -v
 ```
 
-230 tests, no dependencies, no build step, no virtualenv. `safety.py` is pure
+280 tests, no dependencies, no build step, no virtualenv. `safety.py` is pure
 and carries an exhaustive table test — if you change deletion policy, that is
 the file and those are the tests.
 

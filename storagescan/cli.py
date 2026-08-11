@@ -9,10 +9,11 @@ import sys
 import time
 from typing import List, Optional, Tuple
 
+from . import actions
 from . import config as config_module
 from . import serialize
 from .humanize import human_bytes, redact
-from .model import Node, ScanError, ScanResult
+from .model import Node, Risk, ScanError, ScanResult
 from .scan import aging, apfs, cloud, dupes, probes, walker
 from .scan.index import SizeIndex
 from .ui import report as report_module
@@ -52,8 +53,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "files")
     parser.add_argument("--workers", type=int, default=8, metavar="N",
                         help="parallel scan threads (default: 8)")
+    parser.add_argument("--reclaim", action="store_true",
+                        help="review every SAFE cache and move them all to the "
+                             "Trash after one confirmation")
     parser.add_argument("--dry-run", action="store_true",
                         help="never modify anything")
+    parser.add_argument("--no-progress", action="store_true",
+                        help="do not draw the scanning progress line")
     parser.add_argument("--no-color", action="store_true")
     parser.add_argument("--no-open", action="store_true",
                         help="write the report but do not open it")
@@ -115,7 +121,30 @@ def _covers_home(roots: Tuple[str, ...], home: str) -> bool:
     return False
 
 
-def run_scan(cfg, args, *, home: str, now: float) -> ScanResult:
+def make_progress(stream, home: str, enabled: bool):
+    """A progress reporter that redraws one line, or None when unwanted.
+
+    Written to stderr so it never contaminates --json or a piped summary, and
+    suppressed entirely when stderr is not a terminal — a progress bar in a
+    log file is just noise.
+    """
+    if not enabled or not hasattr(stream, "isatty") or not stream.isatty():
+        return None
+
+    def report(done: int, total: int, path: str) -> None:
+        name = redact(path, home)
+        if len(name) > 40:
+            name = "~" + name[-39:]
+        stream.write("\r\033[2K  scanning {}/{}  {}".format(done, total, name))
+        stream.flush()
+        if done == total:
+            stream.write("\r\033[2K")
+            stream.flush()
+
+    return report
+
+
+def run_scan(cfg, args, *, home: str, now: float, progress=None) -> ScanResult:
     started = time.time()
     errors: List[ScanError] = []
     roots = _scan_roots(cfg, args, home)
@@ -131,7 +160,8 @@ def run_scan(cfg, args, *, home: str, now: float) -> ScanResult:
 
     trees = [
         walker.walk_parallel(root, max_depth=max_depth, exclude=tuple(excludes),
-                             errors=errors, workers=args.workers)
+                             errors=errors, workers=args.workers,
+                             on_progress=progress)
         for root in roots
     ]
 
@@ -195,6 +225,79 @@ def _open_file(path: str) -> None:
         pass
 
 
+def reclaimable_batch(result: ScanResult, home: str) -> Tuple:
+    """The findings a batch reclaim is allowed to touch.
+
+    Deliberately narrow: SAFE tier only, must have a real path, and must still
+    exist. Anything needing judgement stays in the interactive browser where
+    it gets its own prompt.
+    """
+    return tuple(
+        f for f in result.findings_by_size()
+        if f.risk is Risk.SAFE and f.path and f.bytes_ > 0
+        and os.path.lexists(f.path)
+    )
+
+
+def run_reclaim(result: ScanResult, cfg, args, *, home: str,
+                stdin=None, stdout=None) -> int:
+    """Review every SAFE finding, then move them all to the Trash on one yes."""
+    stdin = stdin or sys.stdin
+    stdout = stdout or sys.stdout
+
+    batch = reclaimable_batch(result, home)
+    if not batch:
+        print("Nothing in the SAFE tier to reclaim.", file=stdout)
+        return EXIT_OK
+
+    total = sum(f.bytes_ for f in batch)
+    print("These {} items are caches and build products that regenerate "
+          "themselves:\n".format(len(batch)), file=stdout)
+    for finding in batch:
+        print("  {:>10}  {}".format(human_bytes(finding.bytes_),
+                                    redact(finding.path, home)), file=stdout)
+    print("\n  {:>10}  total\n".format(human_bytes(total)), file=stdout)
+
+    if args.dry_run:
+        print("--dry-run: nothing was touched.", file=stdout)
+        return EXIT_OK
+
+    destination = "the Trash" if cfg.trash_by_default else "PERMANENT deletion"
+    print("Move all {} to {}? [y/N] ".format(len(batch), destination),
+          end="", file=stdout, flush=True)
+    answer = stdin.readline().strip().lower()
+    if not answer.startswith("y"):
+        print("Nothing was deleted.", file=stdout)
+        return EXIT_OK
+
+    # One prompt covered the batch, so each item auto-confirms from here.
+    # safety.classify still runs per path inside actions.perform, and anything
+    # that is not SAFE is refused regardless of what was answered above.
+    def confirmed(_path, _risk, _mode):
+        return True
+
+    reclaimed = 0
+    failures = []
+    for finding in batch:
+        outcome = actions.perform(
+            finding.path, home=home, scan_roots=cfg.expanded_scan_paths(),
+            category=finding.category, confirm=confirmed,
+            use_trash=cfg.trash_by_default)
+        if outcome.status in (actions.TRASHED, actions.PURGED):
+            reclaimed += outcome.bytes_
+        else:
+            failures.append((finding.path, outcome.status, outcome.message))
+
+    print("\nReclaimed {}.".format(human_bytes(reclaimed)), file=stdout)
+    if failures:
+        print("{} item(s) could not be removed:".format(len(failures)),
+              file=stdout)
+        for path, status, message in failures:
+            print("  {}  {} {}".format(redact(path, home), status, message),
+                  file=stdout)
+    return EXIT_OK
+
+
 def _print_diff(previous: ScanResult, current: ScanResult, home: str) -> None:
     changes = serialize.diff(previous, current)
     if not changes:
@@ -233,11 +336,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             return EXIT_ERROR
         result = previous
     else:
-        if not args.json:
+        progress = make_progress(sys.stderr, home,
+                                 enabled=not args.no_progress and not args.json)
+        if progress is None and not args.json:
             print("Scanning... (first run on a full disk can take a minute)",
                   file=sys.stderr)
         try:
-            result = run_scan(cfg, args, home=home, now=time.time())
+            result = run_scan(cfg, args, home=home, now=time.time(),
+                              progress=progress)
         except OSError as exc:
             print("storagescan: scan failed: {}".format(exc), file=sys.stderr)
             return EXIT_ERROR
@@ -249,6 +355,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.diff and previous is not None and not args.cached:
         _print_diff(previous, result, home)
+
+    if args.reclaim:
+        return run_reclaim(result, cfg, args, home=home)
 
     if args.report:
         path = report_module.write(result, home=home, generated_at=time.time(),

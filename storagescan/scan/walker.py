@@ -9,8 +9,8 @@ counted once per inode.
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from ..model import Node, ScanError
 
@@ -199,6 +199,7 @@ def walk_parallel(
     exclude: Sequence[str] = (),
     errors: Optional[List[ScanError]] = None,
     workers: int = 8,
+    on_progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> Node:
     """``walk`` with the top-level subtrees processed concurrently.
 
@@ -263,7 +264,13 @@ def walk_parallel(
                         errors=local_errors)
 
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-            children = list(pool.map(run, subdirs))
+            futures = {pool.submit(run, path): path for path in subdirs}
+            for done, future in enumerate(as_completed(futures), start=1):
+                children.append(future.result())
+                if on_progress is not None:
+                    # Reported from this thread, not the workers, so the
+                    # callback never needs to be thread-safe.
+                    on_progress(done, len(subdirs), futures[future])
 
         if errors is not None:
             for batch in collected:

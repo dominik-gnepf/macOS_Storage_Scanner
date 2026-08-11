@@ -172,5 +172,63 @@ class TrashPathTest(unittest.TestCase):
                          os.path.join(self.tmp, "dir"))
 
 
+
+
+class ConfinementTest(unittest.TestCase):
+    """Regression: a deletion must resolve its Trash from the `home` it was
+    given, never from $HOME. Getting this wrong once moved test files into the
+    real user's Trash."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+
+    def test_trash_dir_is_derived_from_home(self):
+        self.assertEqual(actions.default_trash_dir(self.home),
+                         os.path.join(self.home, ".Trash"))
+
+    def test_log_path_is_derived_from_home(self):
+        self.assertTrue(
+            actions.default_log_path(self.home).startswith(self.home))
+
+    def test_trash_path_follows_home_without_an_explicit_dir(self):
+        chosen = actions.trash_path(
+            os.path.join(self.home, "a.bin"), home=self.home)
+        self.assertTrue(chosen.startswith(os.path.join(self.home, ".Trash")))
+
+    def test_delete_without_trash_dir_stays_inside_home(self):
+        target = os.path.join(self.home, "Library", "Caches", "Homebrew")
+        os.makedirs(target)
+        victim = os.path.join(target, "a.bin")
+        with open(victim, "wb") as handle:
+            handle.write(b"x" * 10)
+
+        outcome = actions.perform(
+            victim, home=self.home, scan_roots=(self.home,),
+            category="homebrew.cache", confirm=always,
+            log_path=os.path.join(self.home, "log"))
+
+        self.assertEqual(outcome.status, actions.TRASHED)
+        # The decisive assertion: the file landed under the given home.
+        self.assertTrue(outcome.message.startswith(self.home), outcome.message)
+        self.assertTrue(os.path.exists(
+            os.path.join(self.home, ".Trash", "a.bin")))
+
+    def test_real_home_is_never_touched_by_a_scoped_delete(self):
+        real_trash = os.path.expanduser("~/.Trash")
+        target = os.path.join(self.home, "Library", "Caches", "pip")
+        os.makedirs(target)
+        marker = "storagescan-confinement-probe.bin"
+        victim = os.path.join(target, marker)
+        with open(victim, "wb") as handle:
+            handle.write(b"x" * 10)
+
+        actions.perform(victim, home=self.home, scan_roots=(self.home,),
+                        category="pip.cache", confirm=always,
+                        log_path=os.path.join(self.home, "log"))
+
+        self.assertFalse(os.path.lexists(os.path.join(real_trash, marker)))
+
+
 if __name__ == "__main__":
     unittest.main()

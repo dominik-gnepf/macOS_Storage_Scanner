@@ -132,6 +132,29 @@ PROBES: Tuple[Probe, ...] = (
 Sizer = Callable[[str], Tuple[int, int, int]]
 
 
+def _overlaps(path: str, claimed: Sequence[str]) -> bool:
+    """Does ``path`` contain, or sit inside, something already claimed?
+
+    Findings must not nest. ``Library/Caches/Google/Chrome`` is matched by the
+    browser probe and ``Library/Caches/Google`` by the generic app-cache glob;
+    reporting both would count the same bytes twice, and a batch delete would
+    remove the parent and then fail on the vanished child.
+
+    Since specific probes are registered before general ones, first claim wins.
+    The consequence is a slight under-count — the non-Chrome remainder of
+    ``Caches/Google`` goes unreported — which is the right way to be wrong for
+    a tool whose numbers people act on.
+    """
+    for other in claimed:
+        if path == other:
+            return True
+        if path.startswith(other.rstrip("/") + "/"):
+            return True   # path is inside something already claimed
+        if other.startswith(path.rstrip("/") + "/"):
+            return True   # path would swallow something already claimed
+    return False
+
+
 def run_probes(
     home: str,
     *,
@@ -149,14 +172,14 @@ def run_probes(
     """
     measure = sizer or (lambda path: dir_size(path, errors=errors))
     findings: List[Finding] = []
-    claimed = set()
+    claimed: List[str] = []
 
     for probe in PROBES:
         for pattern in probe.patterns:
             for path in sorted(glob.glob(os.path.join(home, pattern))):
-                if path in claimed or os.path.islink(path):
+                if os.path.islink(path) or _overlaps(path, claimed):
                     continue
-                claimed.add(path)
+                claimed.append(path)
                 size, apparent, _count = measure(path)
                 bytes_ = max(size, apparent)
                 if bytes_ < min_bytes:

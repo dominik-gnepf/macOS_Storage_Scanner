@@ -37,12 +37,26 @@ class ActionOutcome:
     message: str = ""
 
 
-def default_log_path() -> str:
-    return os.path.expanduser("~/.local/state/storagescan/actions.log")
+def default_log_path(home: Optional[str] = None) -> str:
+    """Action log for a given home. Derived from ``home``, never from $HOME.
+
+    Everything here that resolves a location does so from the ``home`` the
+    caller passed in. Reaching for os.path.expanduser("~") instead would mean
+    a caller operating on one home directory writes into another's — which is
+    exactly how a test running against a temp directory ended up moving files
+    into the real user's Trash.
+    """
+    base = home if home is not None else os.path.expanduser("~")
+    return os.path.join(base, ".local", "state", "storagescan", "actions.log")
+
+
+def default_trash_dir(home: Optional[str] = None) -> str:
+    base = home if home is not None else os.path.expanduser("~")
+    return os.path.join(base, ".Trash")
 
 
 def _write_log(outcome: ActionOutcome, home: str, path: Optional[str]) -> None:
-    target = path or default_log_path()
+    target = path or default_log_path(home)
     try:
         parent = os.path.dirname(target)
         if parent:
@@ -58,9 +72,10 @@ def _write_log(outcome: ActionOutcome, home: str, path: Optional[str]) -> None:
         pass  # a failing log must never block or mask the action itself
 
 
-def trash_path(path: str, *, trash_dir: Optional[str] = None) -> str:
+def trash_path(path: str, *, trash_dir: Optional[str] = None,
+               home: Optional[str] = None) -> str:
     """Destination inside the Trash, timestamped if the name is taken."""
-    trash_dir = trash_dir or os.path.expanduser("~/.Trash")
+    trash_dir = trash_dir or default_trash_dir(home)
     base = os.path.basename(path.rstrip("/"))
     candidate = os.path.join(trash_dir, base)
     if not os.path.lexists(candidate):
@@ -131,7 +146,7 @@ def perform(
 
     try:
         if use_trash:
-            destination = trash_path(path, trash_dir=trash_dir)
+            destination = trash_path(path, trash_dir=trash_dir, home=home)
             parent = os.path.dirname(destination)
             if parent:
                 os.makedirs(parent, exist_ok=True)

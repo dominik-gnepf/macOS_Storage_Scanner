@@ -122,5 +122,76 @@ class RunProbesTest(unittest.TestCase):
         self.assertEqual(findings[0].bytes_, 123)
 
 
+
+
+class NonOverlapTest(unittest.TestCase):
+    """Findings must never nest: nesting double-counts bytes and makes a
+    batch delete remove a parent then fail on its child."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+
+    def run_probes(self):
+        return probes.run_probes(self.home, scan_roots=(self.home,), min_bytes=1)
+
+    def test_child_and_parent_are_not_both_reported(self):
+        # Caches/Google/Chrome matches browser.cache; Caches/Google matches
+        # the generic app.cache glob. Only one may survive.
+        build_tree(self.home, {"Library": {"Caches": {"Google": {
+            "Chrome": {"f": 50_000}, "other": {"g": 10_000}}}}})
+        paths = [f.path for f in self.run_probes()]
+        self.assertEqual(len(paths), len(set(paths)))
+        google = os.path.join(self.home, "Library/Caches/Google")
+        chrome = os.path.join(google, "Chrome")
+        self.assertIn(chrome, paths)
+        self.assertNotIn(google, paths)
+
+    def test_no_finding_is_inside_another(self):
+        build_tree(self.home, {
+            "Library": {"Caches": {
+                "Google": {"Chrome": {"f": 50_000}},
+                "Firefox": {"f": 20_000},
+                "pip": {"f": 30_000},
+            }},
+            "Downloads": {"a.dmg": 40_000},
+        })
+        paths = [f.path for f in self.run_probes()]
+        for outer in paths:
+            for inner in paths:
+                if outer is inner:
+                    continue
+                self.assertFalse(
+                    inner.startswith(outer.rstrip("/") + "/"),
+                    "{} nests inside {}".format(inner, outer))
+
+    def test_total_does_not_double_count(self):
+        build_tree(self.home, {"Library": {"Caches": {"Google": {
+            "Chrome": {"f": 50_000}}}}})
+        total = sum(f.bytes_ for f in self.run_probes())
+        # The 50 KB exists once on disk, so it may be counted once.
+        self.assertLess(total, 100_000)
+
+
+class OverlapHelperTest(unittest.TestCase):
+    def test_detects_identical_paths(self):
+        self.assertTrue(probes._overlaps("/a/b", ["/a/b"]))
+
+    def test_detects_a_path_inside_a_claim(self):
+        self.assertTrue(probes._overlaps("/a/b/c", ["/a/b"]))
+
+    def test_detects_a_path_that_would_swallow_a_claim(self):
+        self.assertTrue(probes._overlaps("/a", ["/a/b/c"]))
+
+    def test_allows_siblings(self):
+        self.assertFalse(probes._overlaps("/a/c", ["/a/b"]))
+
+    def test_does_not_match_a_shared_name_prefix(self):
+        self.assertFalse(probes._overlaps("/a/bcd", ["/a/b"]))
+
+    def test_empty_claims_never_overlap(self):
+        self.assertFalse(probes._overlaps("/a/b", []))
+
+
 if __name__ == "__main__":
     unittest.main()
