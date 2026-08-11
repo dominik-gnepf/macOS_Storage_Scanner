@@ -34,7 +34,7 @@ Safe to reclaim now: 37.9 GB
 ## Quick start
 
 ```bash
-git clone https://github.com/<your-account>/macOS_Storage_Scanner.git
+git clone https://github.com/dominik-gnepf/macOS_Storage_Scanner.git
 cd macOS_Storage_Scanner
 ./bin/storagescan
 ```
