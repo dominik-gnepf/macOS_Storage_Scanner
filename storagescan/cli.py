@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import sys
 import time
@@ -14,7 +15,7 @@ from . import config as config_module
 from . import serialize
 from .humanize import human_bytes, redact
 from .model import Node, Risk, ScanError, ScanResult
-from .scan import aging, apfs, cloud, dupes, probes, walker
+from .scan import aging, apfs, cloud, dupes, probes, system, walker
 from .scan.index import SizeIndex
 from .ui import report as report_module
 from .ui import term
@@ -47,6 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--path", action="append", default=None, metavar="DIR",
                         help="scan this directory instead of your home folder "
                              "(repeatable)")
+    parser.add_argument("--no-system", action="store_true",
+                        help="skip /Applications, /Library and other areas "
+                             "outside your home folder")
     parser.add_argument("--include-cloud", action="store_true",
                         help="scan OneDrive/iCloud/Dropbox folders too; this is "
                              "slow and may cause your sync client to download "
@@ -121,6 +125,21 @@ def _covers_home(roots: Tuple[str, ...], home: str) -> bool:
     return False
 
 
+def _scan_system(errors: List[ScanError]) -> List:
+    """Measure areas outside the home directory.
+
+    These are absolute paths belonging to this machine, so callers must only
+    reach here when the scan really is of this machine's home. A caller
+    passing some other home — a test with a temp directory, most obviously —
+    would otherwise walk the real /Library and /private/var. Same lesson as
+    deriving the Trash from `home` rather than from $HOME.
+    """
+    findings: List = []
+    findings.extend(system.scan_areas(errors=errors))
+    findings.extend(system.largest_applications(errors=errors))
+    return findings
+
+
 def make_progress(stream, home: str, enabled: bool):
     """A progress reporter that redraws one line, or None when unwanted.
 
@@ -158,6 +177,17 @@ def run_scan(cfg, args, *, home: str, now: float, progress=None) -> ScanResult:
 
     max_depth = None if args.deep else cfg.fast_depth
 
+    # The system areas are entirely separate trees from the home directory, so
+    # measuring them while the home walk runs costs no extra wall time. Done
+    # serially it added ~35s to a ~30s scan; overlapped, the scan takes about
+    # as long as its slowest half.
+    system_future = None
+    system_pool = None
+    if (scanning_home and not args.no_system
+            and home == os.path.expanduser("~")):
+        system_pool = ThreadPoolExecutor(max_workers=1)
+        system_future = system_pool.submit(_scan_system, errors)
+
     trees = [
         walker.walk_parallel(root, max_depth=max_depth, exclude=tuple(excludes),
                              errors=errors, workers=args.workers,
@@ -189,7 +219,13 @@ def run_scan(cfg, args, *, home: str, now: float, progress=None) -> ScanResult:
     if scanning_home:
         findings.extend(probes.run_probes(
             home, scan_roots=roots, errors=errors, sizer=index.measure))
+        # Cloud folders stay out of the tree but not out of the accounting:
+        # the downloaded files in them occupy real disk.
         findings.extend(cloud.cloud_findings(home, skipped_cloud))
+
+    if system_future is not None:
+        findings.extend(system_future.result())
+        system_pool.shutdown()
 
     volumes, snapshot_findings, apfs_errors = apfs.collect()
     findings.extend(snapshot_findings)

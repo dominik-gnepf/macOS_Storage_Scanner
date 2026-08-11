@@ -71,6 +71,7 @@ storagescan --diff          show what grew since the last scan
 storagescan --path DIR      scan a specific directory (repeatable)
 storagescan --reclaim       review every SAFE cache, then Trash them all at once
 storagescan --include-cloud scan OneDrive/iCloud too (slow; may download files)
+storagescan --no-system     skip /Applications, /Library etc (~25s faster)
 storagescan --dry-run       never modify anything
 storagescan --workers N     parallel scan threads (default 8)
 storagescan --no-progress   suppress the scanning progress line
@@ -141,12 +142,53 @@ Deletions move to the Trash by default. Every action is logged to
 `storagescan` prints the `tmutil` command rather than running it, because that
 one cannot be undone from the Trash.
 
+## Where the space really goes
+
+A home-only scan leaves a large, alarming gap. On the machine this was built
+against, the volume reported 180 GB used while the home tree accounted for
+about 103 GB — 76 GB unexplained, which is exactly the kind of number that
+makes people distrust a tool.
+
+So `storagescan` also measures what sits outside your home folder, without
+needing `sudo`:
+
+```
+Outside your home folder
+     25.1 GB  /Library
+     17.5 GB  /Applications
+     12.5 GB  ~/Library/CloudStorage
+      7.3 GB  /private/var
+      1.5 GB  /opt
+```
+
+That takes the unexplained remainder from 76 GB down to about 12 GB, which is
+snapshots and paths the scan was not permitted to read. Nothing here is
+auto-reclaimable — `/Library` and `/private/var` are system-managed and
+classify as Danger — but individual applications are listed separately at
+Review, since uninstalling an app you do not use is a normal way to get space
+back.
+
+Cloud folders are measured too, despite being excluded from the tree walk.
+Only files you have actually **downloaded** are counted, because placeholders
+occupy zero blocks. Free that space from your sync client by making files
+online-only — deleting them locally would delete them from the cloud as well.
+
+Add `--no-system` to skip all of this and save about 25 seconds.
+
 ## A note on the numbers
 
 Two sizes exist for every file, and they differ a lot on APFS:
 
 - **On disk** (`st_blocks`) — what you actually get back by deleting it.
 - **Apparent** (`st_size`) — what the file claims to be.
+
+Every size in this tool is the on-disk one. The difference is not academic:
+`/Applications` on the development machine reports 23.5 GB apparent against
+17.5 GB actually occupied.
+
+If you check the numbers with `du`, use `du -sk`, not `du -sxk`. macOS presents
+`/Library` and `/Applications` as firmlinks onto the Data volume, so `-x`
+refuses to cross and reports 7.8 GB for a `/Library` that really holds 25.1 GB.
 
 `storagescan` reports on-disk size. This matters most for cloud files: a
 OneDrive placeholder reports 437 KB but occupies **zero** blocks. Reporting
@@ -179,7 +221,7 @@ Optional, at `~/.config/storagescan/config.json`:
 python3 -m unittest discover -s tests -t . -v
 ```
 
-280 tests, no dependencies, no build step, no virtualenv. `safety.py` is pure
+307 tests, no dependencies, no build step, no virtualenv. `safety.py` is pure
 and carries an exhaustive table test — if you change deletion policy, that is
 the file and those are the tests.
 

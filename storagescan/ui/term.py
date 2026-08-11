@@ -53,8 +53,27 @@ def unaccounted(result: ScanResult, home: str) -> Optional[int]:
     volume = primary_volume(result.volumes)
     if volume is None or result.root is None:
         return None
-    gap = volume.used - result.root.size
+    gap = volume.used - attributed(result)
     return gap if gap > 0 else None
+
+
+# Findings that describe space *outside* the scanned tree. Counting them
+# alongside the tree is what turns a large mystery number into a small one;
+# counting anything inside the tree here would double-count it.
+_OUTSIDE_TREE = (
+    "system.applications", "system.library", "system.var",
+    "system.opt", "system.usr_local", "system.shared",
+    "cloud.folder",
+)
+
+
+def attributed(result: ScanResult) -> int:
+    """Bytes the scan can point at: the walked tree plus measured areas
+    outside it (system directories, cloud folders)."""
+    total = result.root.size if result.root is not None else 0
+    total += sum(f.bytes_ for f in result.findings
+                 if f.category in _OUTSIDE_TREE)
+    return total
 
 
 def render(result: ScanResult, *, home: str, color: bool = True) -> str:
@@ -89,6 +108,16 @@ def render(result: ScanResult, *, home: str, color: bool = True) -> str:
                 "not read.", DIM))
         lines.append("")
 
+    outside = [f for f in result.findings_by_size()
+               if f.category in _OUTSIDE_TREE and f.bytes_ > 0]
+    if outside:
+        lines.append(paint("Outside your home folder", BOLD))
+        for finding in outside[:8]:
+            lines.append("  {:>10}  {}".format(
+                human_bytes(finding.bytes_),
+                redact(finding.path, home) if finding.path else finding.title))
+        lines.append("")
+
     if result.root is not None and result.root.children:
         lines.append(paint("Largest directories", BOLD))
         for node in result.root.sorted_children()[:10]:
@@ -96,7 +125,11 @@ def render(result: ScanResult, *, home: str, color: bool = True) -> str:
                 human_bytes(node.size), redact(node.path, home)))
         lines.append("")
 
-    findings = [f for f in result.findings_by_size() if f.bytes_ > 0]
+    # System areas and cloud folders are shown above for accounting. They are
+    # not things this tool reclaims, so listing them here would pad the
+    # headline number with space the user cannot actually get back.
+    findings = [f for f in result.findings_by_size()
+                if f.bytes_ > 0 and f.category not in _OUTSIDE_TREE]
     if findings:
         lines.append(paint("Reclaimable", BOLD))
         for finding in findings[:15]:

@@ -21,7 +21,8 @@ and any code that opens files must skip dataless ones.
 from __future__ import annotations
 
 import os
-from typing import List, Optional, Sequence, Tuple
+import time
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from ..model import Finding, Risk
 
@@ -63,28 +64,94 @@ def is_cloud_path(path: str, roots: Sequence[str]) -> bool:
     return False
 
 
-def cloud_findings(home: str, roots: Sequence[str],
-                   sizer: Optional[object] = None) -> Tuple[Finding, ...]:
-    """Report cloud folders as present-but-unscanned.
+DEFAULT_BUDGET_SECONDS = 20.0
 
-    No size is claimed. Establishing one means enumerating the folder, which
-    is the slow operation being avoided, and the answer would be near zero
-    anyway because placeholders occupy no blocks.
+
+def measure_bounded(path: str, budget: float = DEFAULT_BUDGET_SECONDS
+                    ) -> Optional[int]:
+    """On-disk bytes under ``path``, or None if it took too long.
+
+    Only metadata is read — scandir and lstat, never open() — so this cannot
+    trigger a download no matter how long it runs.
+
+    The time budget exists because a File Provider answers readdir over the
+    network. Measured on a live OneDrive folder: 1.95s once the provider had
+    cached its metadata, but over 8 seconds for the first 739 entries while
+    cold. Returning None beats hanging, and the caller reports honestly that
+    the size is unknown.
+
+    Only ``st_blocks`` is summed, which is what makes this worth doing: a
+    placeholder occupies no blocks and contributes nothing, while a downloaded
+    file contributes its real footprint. Apparent size would wildly overstate
+    a sync folder.
     """
-    return tuple(
-        Finding(
+    deadline = time.monotonic() + budget
+    total = 0
+    stack = [path]
+    while stack:
+        if time.monotonic() > deadline:
+            return None
+        current = stack.pop()
+        try:
+            entries = list(os.scandir(current))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if entry.is_symlink():
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                stack.append(entry.path)
+                continue
+            total += getattr(st, "st_blocks", 0) * 512
+    return total
+
+
+def cloud_findings(home: str, roots: Sequence[str],
+                   budget: float = DEFAULT_BUDGET_SECONDS,
+                   measure: Optional[Callable[[str], Optional[int]]] = None
+                   ) -> Tuple[Finding, ...]:
+    """Report cloud folders: excluded from the tree, but still measured.
+
+    These are left out of the walk because enumerating them is slow, but they
+    are not left out of the accounting — on a real machine the cloud folders
+    held 12.2 GB of downloaded files, which is a sixth of the space that would
+    otherwise show up as unexplained.
+    """
+    sizer = measure or (lambda path: measure_bounded(path, budget))
+    findings: List[Finding] = []
+
+    for root in roots:
+        size = sizer(root)
+        if size is None:
+            findings.append(Finding(
+                category="cloud.folder",
+                title="Cloud folder (size unknown)",
+                path=root,
+                bytes_=0,
+                risk=Risk.BLOCKED,
+                detail=(
+                    "Served over the network by a sync client, and it did not "
+                    "respond quickly enough to measure. Files you have not "
+                    "downloaded occupy no disk space; downloaded ones do."
+                ),
+            ))
+            continue
+        findings.append(Finding(
             category="cloud.folder",
-            title="Cloud folder (not scanned)",
+            title="Cloud folder (downloaded files)",
             path=root,
-            bytes_=0,
+            bytes_=size,
             risk=Risk.BLOCKED,
             detail=(
-                "Served over the network by a sync client. Files that are not "
-                "downloaded take no disk space; ones that are show up in your "
-                "provider's own settings. Scanning it is slow and can trigger "
-                "downloads, so storagescan skips it. Use --include-cloud to "
-                "override."
+                "Only the files you have actually downloaded are counted; "
+                "placeholders occupy no disk space. Free this up from your "
+                "sync client by making files online-only, not by deleting "
+                "them here — deleting would remove them from the cloud too."
             ),
-        )
-        for root in roots
-    )
+        ))
+
+    return tuple(findings)

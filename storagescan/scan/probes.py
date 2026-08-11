@@ -180,8 +180,11 @@ def run_probes(
                 if os.path.islink(path) or _overlaps(path, claimed):
                     continue
                 claimed.append(path)
-                size, apparent, _count = measure(path)
-                bytes_ = max(size, apparent)
+                size, _apparent, _count = measure(path)
+                # On-disk bytes, never apparent: this number is what you
+                # get back by deleting, and apparent size would count sparse
+                # files and cloud placeholders that occupy nothing.
+                bytes_ = size
                 if bytes_ < min_bytes:
                     continue
                 findings.append(Finding(
