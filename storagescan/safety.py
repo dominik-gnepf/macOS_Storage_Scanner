@@ -29,6 +29,7 @@ SAFE_CATEGORIES = frozenset({
     "yarn.cache",
     "cargo.cache",
     "go.modcache",
+    "gradle.cache",
     "xcode.derived_data",
     "xcode.device_support",
     "xcode.simulator_caches",
@@ -41,12 +42,19 @@ REVIEW_CATEGORIES = frozenset({
     "xcode.archives",
     "ios.backups",
     "docker.image",
+    "orbstack.data",
     "vm.image",
+    "android.sdk",
+    "music.downloads",
     "mail.downloads",
     "aging.stale",
     "dupes.copy",
     "node_modules",
 })
+
+# Deliberately absent from both sets, so they classify as DANGER and require
+# the user to retype the path: photos.library, mail.store, apfs.* — these are
+# either irreplaceable or managed by macOS itself.
 
 _ROOT_LEVEL_BLOCKED = frozenset({
     "/", "/Users", "/Applications", "/System", "/Library", "/Volumes",

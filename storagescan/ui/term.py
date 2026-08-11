@@ -1,0 +1,126 @@
+"""Colored one-screen summary — the non-interactive view."""
+
+from __future__ import annotations
+
+from typing import List, Optional
+
+from ..humanize import human_bytes, redact
+from ..model import Risk, ScanResult
+from ..scan.apfs import primary_volume
+
+RESET = "\x1b[0m"
+BOLD = "\x1b[1m"
+DIM = "\x1b[2m"
+RED = "\x1b[31m"
+YELLOW = "\x1b[33m"
+GREEN = "\x1b[32m"
+
+RISK_LABEL = {
+    Risk.SAFE: "SAFE",
+    Risk.REVIEW: "REVIEW",
+    Risk.DANGER: "DANGER",
+    Risk.BLOCKED: "LOCKED",
+}
+
+_RISK_COLOR = {
+    Risk.SAFE: GREEN,
+    Risk.REVIEW: YELLOW,
+    Risk.DANGER: RED,
+    Risk.BLOCKED: DIM,
+}
+
+FDA_STEPS = (
+    "System Settings > Privacy & Security > Full Disk Access, "
+    "add your terminal app, then restart it."
+)
+
+
+def unaccounted(result: ScanResult) -> Optional[int]:
+    """Volume bytes the scan could not attribute to any scanned path.
+
+    This is the honest replacement for a purgeable-space figure: macOS exposes
+    no supported way to read purgeable from the command line, but the gap
+    between what the volume reports as used and what the scan could see is
+    both measurable and exactly the number people are looking for when the
+    folder sizes do not add up.
+    """
+    volume = primary_volume(result.volumes)
+    if volume is None or result.root is None:
+        return None
+    gap = volume.used - result.root.size
+    return gap if gap > 0 else None
+
+
+def render(result: ScanResult, *, home: str, color: bool = True) -> str:
+    def paint(text, code):
+        return "{}{}{}".format(code, text, RESET) if color else text
+
+    lines: List[str] = []
+
+    if not result.fda_ok:
+        lines.append(paint("INCOMPLETE SCAN", BOLD + RED))
+        lines.append("Full Disk Access is not granted, so parts of your home "
+                     "folder were")
+        lines.append("skipped and the totals below are too low. Grant it in:")
+        lines.append("  " + FDA_STEPS)
+        lines.append("")
+
+    volume = primary_volume(result.volumes)
+    if volume is not None:
+        lines.append("{}  {} free of {}  ({} used)".format(
+            paint(volume.mount, BOLD),
+            human_bytes(volume.free),
+            human_bytes(volume.total),
+            human_bytes(volume.used),
+        ))
+        gap = unaccounted(result)
+        if gap:
+            lines.append(paint(
+                "  {} used but not attributable to scanned files — usually "
+                "APFS snapshots,".format(human_bytes(gap)), DIM))
+            lines.append(paint(
+                "  other volumes in the container, or paths this scan could "
+                "not read.", DIM))
+        lines.append("")
+
+    if result.root is not None and result.root.children:
+        lines.append(paint("Largest directories", BOLD))
+        for node in result.root.sorted_children()[:10]:
+            lines.append("  {:>10}  {}".format(
+                human_bytes(node.size), redact(node.path, home)))
+        lines.append("")
+
+    findings = [f for f in result.findings_by_size() if f.bytes_ > 0]
+    if findings:
+        lines.append(paint("Reclaimable", BOLD))
+        for finding in findings[:15]:
+            label = paint(RISK_LABEL[finding.risk], _RISK_COLOR[finding.risk])
+            where = redact(finding.path, home) if finding.path else finding.detail
+            lines.append("  {:>10}  {:<8}  {}".format(
+                human_bytes(finding.bytes_), label, finding.title))
+            lines.append(paint("              {}".format(where), DIM))
+            if finding.reclaim_hint:
+                lines.append(paint("              $ {}".format(
+                    finding.reclaim_hint), DIM))
+        lines.append("")
+        lines.append("Safe to reclaim now: {}".format(
+            human_bytes(result.reclaimable(Risk.SAFE))))
+        lines.append("With review:         {}".format(
+            human_bytes(result.reclaimable(Risk.SAFE, Risk.REVIEW))))
+        lines.append("")
+
+    sizeless = [f for f in result.findings if f.bytes_ == 0]
+    if sizeless:
+        lines.append(paint("Also present (size not reported by macOS)", BOLD))
+        for finding in sizeless[:8]:
+            lines.append("  {}".format(finding.title))
+            if finding.reclaim_hint:
+                lines.append(paint("    $ {}".format(finding.reclaim_hint), DIM))
+        lines.append("")
+
+    if result.errors:
+        lines.append(paint(
+            "{} items were unreadable and are not counted above".format(
+                len(result.errors)), DIM))
+
+    return "\n".join(lines)

@@ -1,0 +1,4 @@
+Snapshots for volume group containing disk /:
+com.apple.os.update-0000000000000000000000000000000000000000000000000000000000000001
+com.apple.os.update-MSUPrepareUpdate
+com.apple.TimeMachine.2026-08-09-041500.local
