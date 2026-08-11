@@ -7,7 +7,20 @@
 
 set -euo pipefail
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve symlinks before locating the package. install.sh puts a symlink on
+# PATH, and BASH_SOURCE then points at the *link*, not at this file — so a
+# naive dirname resolves to ~/.local/bin and the package is never found.
+# macOS ships no `readlink -f`, hence the loop.
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  link_dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  case "$src" in
+    /*) ;;                    # already absolute
+    *) src="$link_dir/$src" ;;  # relative to the link's directory
+  esac
+done
+here="$(cd -P "$(dirname "$src")/.." && pwd)"
 python_bin="${STORAGESCAN_PYTHON:-python3}"
 
 # On a Mac without the Apple Command Line Tools, /usr/bin/python3 is a stub

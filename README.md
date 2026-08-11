@@ -36,13 +36,16 @@ Safe to reclaim now: 36.5 GB
 ```bash
 git clone https://github.com/dominik-gnepf/macOS_Storage_Scanner.git
 cd macOS_Storage_Scanner
-./install.sh          # optional: puts `macosscanner` on your PATH
+./install.sh          # puts `macosscanner` on your PATH
 macosscanner
 ```
 
 `install.sh` only creates a symlink — nothing is copied or compiled, and you
-can undo it by deleting the link it prints. Without it, run `./bin/macosscanner`
-from the checkout.
+can undo it by deleting the link it prints. It picks a directory that needs no
+`sudo`, and tells you the one line to add to `.zshrc` if that directory is not
+on your PATH yet.
+
+Skip it if you like and run `./bin/macosscanner` from the checkout instead.
 
 Running it with no arguments opens the menu:
 
@@ -291,7 +294,7 @@ Optional, at `~/.config/storagescan/config.json`:
 python3 -m unittest discover -s tests -t . -v
 ```
 
-362 tests, no dependencies, no build step, no virtualenv. `safety.py` is pure
+371 tests, no dependencies, no build step, no virtualenv. `safety.py` is pure
 and carries an exhaustive table test — if you change deletion policy, that is
 the file and those are the tests.
 
