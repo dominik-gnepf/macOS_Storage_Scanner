@@ -1,0 +1,34 @@
+#!/bin/bash
+# storagescan — find where your macOS disk space went.
+#
+# This launcher only does preflight. All logic lives in the Python package,
+# which sits one directory up (the launcher cannot live beside it: the
+# package directory is itself named storagescan).
+
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python_bin="${STORAGESCAN_PYTHON:-python3}"
+
+# On a Mac without the Apple Command Line Tools, /usr/bin/python3 is a stub
+# that pops a GUI installer and exits non-zero. Catch that here rather than
+# letting it surface later as an unreadable error.
+if ! "$python_bin" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' \
+        >/dev/null 2>&1; then
+  cat <<'MESSAGE'
+storagescan needs Python 3.9 or newer, which macOS ships with the Apple
+Command Line Tools. Install them with:
+
+    xcode-select --install
+
+then run storagescan again.
+
+If you have Python somewhere else, point at it directly:
+
+    STORAGESCAN_PYTHON=/opt/homebrew/bin/python3 storagescan
+MESSAGE
+  exit 3
+fi
+
+export PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}"
+exec "$python_bin" -m storagescan "$@"

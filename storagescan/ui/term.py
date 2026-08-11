@@ -111,16 +111,29 @@ def render(result: ScanResult, *, home: str, color: bool = True) -> str:
 
     sizeless = [f for f in result.findings if f.bytes_ == 0]
     if sizeless:
-        lines.append(paint("Also present (size not reported by macOS)", BOLD))
-        for finding in sizeless[:8]:
-            lines.append("  {}".format(finding.title))
+        lines.append(paint("Not measured", BOLD))
+        for finding in sizeless[:10]:
+            where = redact(finding.path, home) if finding.path else ""
+            lines.append("  {}{}".format(
+                finding.title, "  {}".format(where) if where else ""))
             if finding.reclaim_hint:
                 lines.append(paint("    $ {}".format(finding.reclaim_hint), DIM))
+        lines.append(paint(
+            "  macOS does not report a size for these. Snapshots hold space "
+            "until", DIM))
+        lines.append(paint(
+            "  macOS releases it; cloud folders are skipped because reading "
+            "them is slow", DIM))
+        lines.append(paint(
+            "  and can trigger downloads (--include-cloud to scan anyway).",
+            DIM))
         lines.append("")
 
     if result.errors:
         lines.append(paint(
-            "{} items were unreadable and are not counted above".format(
-                len(result.errors)), DIM))
+            "{} items were unreadable and are not counted above{}".format(
+                len(result.errors),
+                " — granting Full Disk Access will fix most of these"
+                if not result.fda_ok else ""), DIM))
 
     return "\n".join(lines)

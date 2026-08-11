@@ -1,0 +1,152 @@
+from __future__ import annotations
+
+import unittest
+
+from storagescan.model import Finding, Node, Risk, ScanResult
+from storagescan.ui import tui
+
+HOME = "/Users/example"
+
+
+def tree():
+    deep = Node(path=HOME + "/Library/Caches", size=400, apparent=400,
+                count=2, mtime=0.0)
+    lib = Node(path=HOME + "/Library", size=900, apparent=900, count=5,
+               mtime=0.0, children=(deep,))
+    dls = Node(path=HOME + "/Downloads", size=100, apparent=100, count=2, mtime=0.0)
+    return Node(path=HOME, size=1000, apparent=1000, count=7, mtime=0.0,
+                children=(lib, dls))
+
+
+def result():
+    return ScanResult(
+        root=tree(),
+        findings=(
+            Finding("downloads", "Downloads", HOME + "/Downloads", 100, Risk.REVIEW),
+            Finding("homebrew.cache", "Homebrew", HOME + "/Library/Caches/Homebrew",
+                    900, Risk.SAFE),
+        ),
+    )
+
+
+class TreeStateTest(unittest.TestCase):
+    def test_rows_are_children_sorted_by_size(self):
+        state = tui.TreeState(result())
+        self.assertEqual([r.path for r in state.rows()],
+                         [HOME + "/Library", HOME + "/Downloads"])
+
+    def test_select_moves_and_clamps(self):
+        state = tui.TreeState(result())
+        state.select(1)
+        self.assertEqual(state.index, 1)
+        state.select(5)
+        self.assertEqual(state.index, 1)
+        state.select(-99)
+        self.assertEqual(state.index, 0)
+
+    def test_enter_descends_and_up_returns(self):
+        state = tui.TreeState(result())
+        state.enter()
+        self.assertEqual(state.current_dir().path, HOME + "/Library")
+        state.up()
+        self.assertEqual(state.current_dir().path, HOME)
+
+    def test_up_at_root_is_a_noop(self):
+        state = tui.TreeState(result())
+        state.up()
+        self.assertEqual(state.current_dir().path, HOME)
+
+    def test_enter_on_leaf_is_a_noop(self):
+        state = tui.TreeState(result())
+        state.select(1)  # Downloads has no children
+        state.enter()
+        self.assertEqual(state.current_dir().path, HOME)
+
+    def test_enter_resets_selection(self):
+        state = tui.TreeState(result())
+        state.select(1)
+        state.index = 0
+        state.enter()
+        self.assertEqual(state.index, 0)
+
+    def test_sort_toggles_between_size_and_name(self):
+        state = tui.TreeState(result())
+        state.toggle_sort()
+        self.assertEqual(state.sort_key, "name")
+        self.assertEqual([r.path for r in state.rows()],
+                         [HOME + "/Downloads", HOME + "/Library"])
+        state.toggle_sort()
+        self.assertEqual(state.sort_key, "size")
+
+    def test_findings_view_lists_findings_by_size(self):
+        state = tui.TreeState(result())
+        state.toggle_view()
+        self.assertEqual(state.view, "findings")
+        self.assertEqual([f.category for f in state.rows()],
+                         ["homebrew.cache", "downloads"])
+
+    def test_enter_does_nothing_in_findings_view(self):
+        state = tui.TreeState(result())
+        state.toggle_view()
+        state.enter()
+        self.assertEqual(state.view, "findings")
+
+    def test_current_returns_selected_row_in_either_view(self):
+        state = tui.TreeState(result())
+        self.assertEqual(state.current().path, HOME + "/Library")
+        state.toggle_view()
+        self.assertEqual(state.current().category, "homebrew.cache")
+
+    def test_breadcrumb_is_redacted(self):
+        state = tui.TreeState(result())
+        self.assertEqual(state.breadcrumb(HOME), "~")
+        state.enter()
+        self.assertEqual(state.breadcrumb(HOME), "~/Library")
+
+    def test_empty_result_has_no_rows_and_does_not_crash(self):
+        state = tui.TreeState(ScanResult(root=None))
+        self.assertEqual(state.rows(), ())
+        self.assertIsNone(state.current())
+        state.select(1)
+        state.enter()
+        state.up()
+        self.assertEqual(state.breadcrumb(HOME), "(no scan)")
+
+
+class FormatRowTest(unittest.TestCase):
+    def test_includes_size_bar_and_name(self):
+        node = Node(path=HOME + "/Library", size=900, apparent=900,
+                    count=5, mtime=0.0)
+        row = tui.format_row(node, home=HOME, total=1000, width=70)
+        self.assertIn("Library", row)
+        self.assertIn("900 B", row)
+        self.assertIn("90%", row)
+        self.assertLessEqual(len(row), 70)
+
+    def test_findings_show_their_risk_marker(self):
+        finding = Finding("downloads", "Downloads", HOME + "/Downloads",
+                          100, Risk.REVIEW)
+        self.assertIn("REVW", tui.format_row(finding, home=HOME, total=100,
+                                             width=70))
+
+    def test_zero_total_does_not_divide_by_zero(self):
+        node = Node(path=HOME + "/x", size=0, apparent=0, count=0, mtime=0.0)
+        self.assertIn("0%", tui.format_row(node, home=HOME, total=0, width=70))
+
+    def test_long_names_are_truncated_to_width(self):
+        node = Node(path=HOME + "/" + "n" * 200, size=1, apparent=1,
+                    count=1, mtime=0.0)
+        row = tui.format_row(node, home=HOME, total=10, width=60)
+        self.assertLessEqual(len(row), 60)
+
+    def test_narrow_width_still_produces_a_line(self):
+        node = Node(path=HOME + "/x", size=5, apparent=5, count=1, mtime=0.0)
+        row = tui.format_row(node, home=HOME, total=10, width=MIN_WIDTH)
+        self.assertLessEqual(len(row), MIN_WIDTH)
+
+
+MIN_WIDTH = tui.MIN_SIZE[0]
+
+
+if __name__ == "__main__":
+    unittest.main()
