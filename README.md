@@ -98,6 +98,38 @@ It refuses to touch anything outside the SAFE tier even if a finding claims
 otherwise — every path still goes through `safety.classify` individually.
 Add `--dry-run` to see the list without being asked anything.
 
+## Getting warned early
+
+The point of a storage tool is to hear about the problem before macOS raises
+it at the worst possible moment. `storagescan` can install a weekly launchd
+agent that checks in the background and notifies you only when free space
+drops below a threshold:
+
+```bash
+storagescan --install-agent          # weekly check, 20 GB default threshold
+storagescan --agent-status           # is it installed and loaded?
+storagescan --uninstall-agent        # removes the agent and its plist
+```
+
+The notification names the problem and the opportunity together:
+
+> **storagescan** — 11.8 GB free. 36.1 GB can be reclaimed from caches.
+
+The scheduled run **only reads and notifies**. It never deletes anything, and
+it never will — reclaiming is always something you do deliberately.
+
+Details worth knowing:
+
+- It uses `StartInterval`, not a fixed hour. A calendar job scheduled for
+  03:00 is simply skipped if the Mac is asleep then; an interval job runs when
+  the machine next wakes.
+- `RunAtLoad` is false, so installing it does not immediately start a scan.
+- It runs at `Nice 10` with `LowPriorityIO`, so it stays out of the way.
+- Output goes to `~/.local/state/storagescan/monitor.log`.
+- Change the threshold with `--alert-below 30` (in GB).
+
+You can run the check by hand at any time with `storagescan --check`.
+
 ## Full Disk Access
 
 Without it, macOS hides Downloads, Mail, Messages, and app containers from
@@ -221,17 +253,11 @@ Optional, at `~/.config/storagescan/config.json`:
 python3 -m unittest discover -s tests -t . -v
 ```
 
-307 tests, no dependencies, no build step, no virtualenv. `safety.py` is pure
+332 tests, no dependencies, no build step, no virtualenv. `safety.py` is pure
 and carries an exhaustive table test — if you change deletion policy, that is
 the file and those are the tests.
 
 ## Roadmap
-
-**Next up**
-
-- **Scheduled monitoring** — an optional `launchd` agent that scans weekly and
-  notifies you when free space crosses a threshold, so the first warning comes
-  from `storagescan` rather than from macOS at the worst possible moment.
 
 **Five ideas further out**
 

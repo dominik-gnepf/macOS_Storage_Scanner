@@ -12,6 +12,7 @@ from typing import List, Optional, Tuple
 
 from . import actions
 from . import config as config_module
+from . import monitor
 from . import serialize
 from .humanize import human_bytes, redact
 from .model import Node, Risk, ScanError, ScanResult
@@ -67,6 +68,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-color", action="store_true")
     parser.add_argument("--no-open", action="store_true",
                         help="write the report but do not open it")
+    agent = parser.add_argument_group(
+        "scheduled monitoring",
+        "Run a weekly background check and get a notification while there is "
+        "still room to act. The scheduled run only reads and notifies; it "
+        "never deletes.")
+    agent.add_argument("--install-agent", action="store_true",
+                       help="install the weekly launchd agent")
+    agent.add_argument("--uninstall-agent", action="store_true",
+                       help="remove the launchd agent")
+    agent.add_argument("--agent-status", action="store_true",
+                       help="report whether the agent is installed")
+    agent.add_argument("--check", action="store_true",
+                       help="the scheduled check: scan and notify only if free "
+                            "space is low (this is what the agent runs)")
+    agent.add_argument("--alert-below", type=str, default=None, metavar="GB",
+                       help="free-space threshold for --check (default: 20)")
+
     parser.add_argument("--config", default=None, metavar="FILE")
     parser.add_argument("--cache-file", default=None, metavar="FILE")
     parser.add_argument("--report-file", default=None, metavar="FILE")
@@ -347,9 +365,61 @@ def _print_diff(previous: ScanResult, current: ScanResult, home: str) -> None:
     print("")
 
 
+def launcher_path() -> str:
+    """Absolute path to the bin/storagescan launcher for this checkout.
+
+    launchd has no working directory and no PATH to speak of, so the agent
+    must record an absolute path.
+    """
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "bin", "storagescan")
+
+
+def run_agent_command(args, *, home: str, stdout=None) -> Optional[int]:
+    """Handle the agent subcommands. Returns None if none was requested."""
+    stdout = stdout or sys.stdout
+
+    if args.agent_status:
+        print("storagescan monitor: {}".format(monitor.status(home)),
+              file=stdout)
+        if monitor.is_installed(home):
+            print("  agent: {}".format(monitor.agent_path(home)), file=stdout)
+            print("  log:   {}".format(monitor.log_path(home)), file=stdout)
+        return EXIT_OK
+
+    if args.uninstall_agent:
+        _ok, message = monitor.uninstall(home=home)
+        print("storagescan monitor: {}".format(message), file=stdout)
+        return EXIT_OK
+
+    if args.install_agent:
+        launcher = launcher_path()
+        if not os.access(launcher, os.X_OK):
+            print("storagescan: launcher not executable at {}".format(launcher),
+                  file=sys.stderr)
+            return EXIT_ERROR
+        ok, message = monitor.install(launcher=launcher, home=home)
+        if not ok:
+            print("storagescan: {}".format(message), file=sys.stderr)
+            return EXIT_ERROR
+        print("Installed weekly check: {}\n"
+              "It scans in the background and notifies you only when free "
+              "space drops below the threshold.\n"
+              "Remove it any time with: storagescan --uninstall-agent"
+              .format(message), file=stdout)
+        return EXIT_OK
+
+    return None
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     home = os.path.expanduser("~")
+
+    agent_result = run_agent_command(args, home=home)
+    if agent_result is not None:
+        return agent_result
 
     try:
         cfg = config_module.load(args.config)
@@ -387,6 +457,25 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.json:
         print(serialize.dumps(result))
+        return EXIT_OK
+
+    if args.check:
+        threshold = monitor.DEFAULT_ALERT_BYTES
+        if args.alert_below:
+            try:
+                threshold = int(float(args.alert_below) * 1_000_000_000)
+            except ValueError:
+                print("storagescan: --alert-below wants a number of GB",
+                      file=sys.stderr)
+                return EXIT_USAGE
+        if monitor.should_alert(result, threshold):
+            message = monitor.alert_message(result)
+            monitor.notify(message)
+            print("low space: {}".format(message))
+        else:
+            volume = apfs.primary_volume(result.volumes)
+            print("ok: {} free".format(
+                human_bytes(volume.free) if volume else "unknown"))
         return EXIT_OK
 
     if args.diff and previous is not None and not args.cached:
