@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import time
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional, Sequence, Tuple
 
 from .humanize import human_bytes, redact
 from .model import Risk
-from .safety import classify, confirmation_for
+from .safety import batch_allowed, classify, confirmation_for
+from .scan.walker import dir_size
 
 # (path, risk, confirmation_mode) -> was it confirmed?
 Confirm = Callable[[str, Risk, str], bool]
@@ -55,6 +57,49 @@ def default_trash_dir(home: Optional[str] = None) -> str:
     return os.path.join(base, ".Trash")
 
 
+def _device(path: str) -> int:
+    return os.lstat(path).st_dev
+
+
+def mount_point(path: str) -> str:
+    """The mount containing ``path``. Walks parents until ``st_dev`` changes."""
+    path = os.path.abspath(path)
+    if os.path.islink(path) or not os.path.isdir(path):
+        path = os.path.dirname(path)
+    try:
+        dev = _device(path)
+    except OSError:
+        return path
+    while True:
+        parent = os.path.dirname(path)
+        if parent == path:
+            return path
+        try:
+            if _device(parent) != dev:
+                return path
+        except OSError:
+            return path
+        path = parent
+
+
+def trash_dir_for(path: str, home: str) -> str:
+    """Trash that lives on the same volume as ``path``.
+
+    ``shutil.move`` to ``~/.Trash`` from another volume copies onto the boot
+    disk first. Finder puts the file in ``.Trashes/<uid>/`` on the source
+    volume instead — a large VM image on a USB drive must not fill the Mac.
+    """
+    home_trash = default_trash_dir(home)
+    try:
+        target = path if os.path.lexists(path) else os.path.dirname(path)
+        home_anchor = home_trash if os.path.lexists(home_trash) else home
+        if _device(target) == _device(home_anchor):
+            return home_trash
+    except OSError:
+        return home_trash
+    return os.path.join(mount_point(path), ".Trashes", str(os.getuid()))
+
+
 def _write_log(outcome: ActionOutcome, home: str, path: Optional[str]) -> None:
     target = path or default_log_path(home)
     try:
@@ -75,32 +120,39 @@ def _write_log(outcome: ActionOutcome, home: str, path: Optional[str]) -> None:
 def trash_path(path: str, *, trash_dir: Optional[str] = None,
                home: Optional[str] = None) -> str:
     """Destination inside the Trash, timestamped if the name is taken."""
-    trash_dir = trash_dir or default_trash_dir(home)
+    if trash_dir is None:
+        trash_dir = trash_dir_for(path, home or os.path.expanduser("~"))
     base = os.path.basename(path.rstrip("/"))
     candidate = os.path.join(trash_dir, base)
     if not os.path.lexists(candidate):
         return candidate
     stamp = time.strftime("%Y-%m-%d %H.%M.%S")
     root, ext = os.path.splitext(base)
-    return os.path.join(trash_dir, "{} {}{}".format(root, stamp, ext))
+    n = 0
+    while True:
+        if n == 0:
+            name = "{} {}{}".format(root, stamp, ext)
+        else:
+            name = "{} {} {}{}".format(root, stamp, n, ext)
+        candidate = os.path.join(trash_dir, name)
+        if not os.path.lexists(candidate):
+            return candidate
+        n += 1
 
 
 def measure(path: str) -> int:
-    """Apparent bytes held by a path, for reporting what was reclaimed."""
+    """On-disk bytes held by a path — what deleting it actually gives back."""
+    size, _apparent, _count = dir_size(path)
+    return size
+
+
+def _identity(path: str) -> Optional[Tuple[int, int, int]]:
+    """(dev, ino, file type). Changes when the path is replaced under us."""
     try:
         st = os.lstat(path)
     except OSError:
-        return 0
-    if os.path.islink(path) or not os.path.isdir(path):
-        return st.st_size
-    total = 0
-    for dirpath, _dirnames, filenames in os.walk(path, followlinks=False):
-        for name in filenames:
-            try:
-                total += os.lstat(os.path.join(dirpath, name)).st_size
-            except OSError:
-                continue
-    return total
+        return None
+    return (st.st_dev, st.st_ino, stat.S_IFMT(st.st_mode))
 
 
 def perform(
@@ -114,6 +166,7 @@ def perform(
     use_trash: bool = True,
     trash_dir: Optional[str] = None,
     log_path: Optional[str] = None,
+    require_safe: bool = False,
 ) -> ActionOutcome:
     """Delete ``path`` after classifying it and obtaining consent."""
     is_symlink = os.path.islink(path)
@@ -128,9 +181,14 @@ def perform(
     if risk is Risk.BLOCKED:
         return done(REFUSED, message="storagescan will not delete this path")
 
+    if require_safe and (
+            risk is not Risk.SAFE or not batch_allowed(path, home)):
+        return done(REFUSED, message="storagescan will not delete this path")
+
     if not os.path.lexists(path):
         return done(FAILED, message="path does not exist")
 
+    identity = _identity(path)
     size = measure(path)
 
     if not confirm(path, risk, confirmation_for(risk)):
@@ -141,15 +199,15 @@ def perform(
 
     # Re-check right before acting: the tree may have moved since the scan,
     # and acting on a stale path is how a tool deletes the wrong thing.
-    if not os.path.lexists(path):
-        return done(CHANGED, message="path vanished before deletion")
+    if _identity(path) != identity:
+        return done(CHANGED, message="path changed before deletion")
 
     try:
         if use_trash:
             destination = trash_path(path, trash_dir=trash_dir, home=home)
             parent = os.path.dirname(destination)
             if parent:
-                os.makedirs(parent, exist_ok=True)
+                os.makedirs(parent, mode=0o700, exist_ok=True)
             shutil.move(path, destination)
             return done(TRASHED, size, destination)
         if os.path.isdir(path) and not os.path.islink(path):

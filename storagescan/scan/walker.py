@@ -35,6 +35,17 @@ def _excluded(path: str, exclude: Sequence[str]) -> bool:
     return False
 
 
+def prune_dirnames(dirpath: str, dirnames: List[str],
+                   exclude: Sequence[str]) -> None:
+    """Drop excluded children from an ``os.walk`` dirnames list in place."""
+    if not exclude:
+        return
+    dirnames[:] = [
+        name for name in dirnames
+        if not _excluded(os.path.join(dirpath, name), exclude)
+    ]
+
+
 def dir_size(
     path: str,
     *,

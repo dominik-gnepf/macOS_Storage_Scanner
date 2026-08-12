@@ -85,6 +85,17 @@ class WalkerTest(unittest.TestCase):
         node = walker.walk(self.tmp)
         self.assertEqual(node.apparent, 10)
 
+    def test_non_utf8_filename_is_counted(self):
+        raw_dir = os.path.join(os.fsencode(self.tmp), b"caf\xe9")
+        try:
+            os.mkdir(raw_dir)
+        except (OSError, UnicodeError):
+            self.skipTest("filesystem rejected a non-UTF-8 name")
+        with open(os.path.join(raw_dir, b"f"), "wb") as handle:
+            handle.write(b"x" * 10)
+        node = walker.walk(self.tmp)
+        self.assertEqual(node.apparent, 10)
+
     def test_walk_is_iterative_not_recursive(self):
         # A 1200-deep tree can't be built on macOS (PATH_MAX is 1024), so
         # depth alone can't prove this. Instead: build a 100-deep tree and

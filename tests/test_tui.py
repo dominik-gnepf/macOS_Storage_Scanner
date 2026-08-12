@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import os
+import shutil
+import tempfile
 import unittest
 
 from storagescan.model import Finding, Node, Risk, ScanResult
 from storagescan.ui import tui
+from tests.support import build_tree
 
 HOME = "/Users/example"
 
@@ -112,6 +116,82 @@ class TreeStateTest(unittest.TestCase):
         state.up()
         self.assertEqual(state.breadcrumb(HOME), "(no scan)")
 
+    def test_remove_current_drops_the_row_and_shrinks_ancestors(self):
+        state = tui.TreeState(result())
+        self.assertEqual([r.path for r in state.rows()],
+                         [HOME + "/Library", HOME + "/Downloads"])
+        state.remove_current()
+        self.assertEqual([r.path for r in state.rows()],
+                         [HOME + "/Downloads"])
+        self.assertEqual(state.current_dir().size, 100)
+        self.assertEqual(state.current_dir().count, 2)
+        self.assertEqual(state.current().path, HOME + "/Downloads")
+
+    def test_remove_current_finding_drops_it_from_the_list(self):
+        state = tui.TreeState(result())
+        state.toggle_view()
+        self.assertEqual(len(state.rows()), 2)
+        state.remove_current()
+        self.assertEqual([f.category for f in state.rows()], ["downloads"])
+
+    def test_replace_current_fills_in_a_truncated_folder(self):
+        truncated = Node(path=HOME + "/Downloads", size=100, apparent=100,
+                         count=2, mtime=0.0, truncated=True)
+        lib = Node(path=HOME + "/Library", size=900, apparent=900,
+                   count=5, mtime=0.0)
+        root = Node(path=HOME, size=1000, apparent=1000, count=7, mtime=0.0,
+                    children=(lib, truncated))
+        state = tui.TreeState(ScanResult(root=root))
+        state.select(1)
+        inner = Node(path=HOME + "/Downloads/iso", size=80, apparent=80,
+                     count=1, mtime=0.0)
+        full = Node(path=HOME + "/Downloads", size=100, apparent=100,
+                    count=2, mtime=0.0, children=(inner,))
+        state.replace_current(full)
+        self.assertFalse(state.current().truncated)
+        self.assertEqual(len(state.current().children), 1)
+        state.enter()
+        self.assertEqual(state.current_dir().path, HOME + "/Downloads")
+
+    def test_expand_selected_refuses_a_fully_scanned_folder(self):
+        state = tui.TreeState(result())
+        self.assertEqual(tui.expand_selected(state), "Already fully scanned.")
+
+    def test_remove_current_updates_the_result_the_browser_returns(self):
+        # The menu and --cached reuse whatever run() last saw. If deletes
+        # only live in TreeState and never write back, the next screen
+        # still claims the space is there.
+        state = tui.TreeState(result())
+        state.remove_current()
+        self.assertEqual([c.path for c in state.result.root.children],
+                         [HOME + "/Downloads"])
+        self.assertEqual([f.category for f in state.result.findings],
+                         ["downloads"])
+
+    def test_expand_selected_walks_a_real_truncated_folder(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        build_tree(tmp, {"keep": {"deep": {"f": 1000}}})
+        truncated = Node(path=os.path.join(tmp, "keep"), size=1000,
+                         apparent=1000, count=1, mtime=0.0, truncated=True)
+        root = Node(path=tmp, size=1000, apparent=1000, count=1, mtime=0.0,
+                    children=(truncated,))
+        state = tui.TreeState(ScanResult(root=root))
+        message = tui.expand_selected(state)
+        self.assertIn("keep", message)
+        self.assertFalse(state.current().truncated)
+        self.assertTrue(state.current().children)
+
+    def test_remove_current_nested_rewrites_the_stack(self):
+        state = tui.TreeState(result())
+        state.enter()
+        state.remove_current()
+        self.assertEqual(state.current_dir().path, HOME + "/Library")
+        self.assertEqual(state.current_dir().size, 500)
+        self.assertEqual(state.rows(), ())
+        state.up()
+        self.assertEqual(state.current_dir().size, 600)
+
 
 class PercentageBaseTest(unittest.TestCase):
     def test_tree_base_is_the_current_directory_total(self):
@@ -145,6 +225,11 @@ class FormatRowTest(unittest.TestCase):
         self.assertIn("900 B", row)
         self.assertIn("90%", row)
         self.assertLessEqual(len(row), 70)
+
+    def test_truncated_folder_is_marked(self):
+        node = Node(path=HOME + "/Library", size=900, apparent=900,
+                    count=5, mtime=0.0, truncated=True)
+        self.assertIn("…", self.row(node))
 
     def test_percentage_uses_total_not_scale(self):
         # The biggest row must not read 100% just for being the biggest.

@@ -10,21 +10,21 @@ see on its own.
 
 ```
 Reclaimable
-     14.8 GB  SAFE      Simulator devices and caches
-              ~/Library/Developer/CoreSimulator/Devices
-              $ xcrun simctl delete unavailable
       7.9 GB  SAFE      npm cache
               ~/.npm
               $ npm cache clean --force
       6.1 GB  SAFE      iOS DeviceSupport
               ~/Library/Developer/Xcode/iOS DeviceSupport
+      4.2 GB  SAFE      uv cache
+              ~/.cache/uv
+              $ uv cache prune
 
-Safe to reclaim now: 36.5 GB
+Safe to reclaim now: 18.2 GB
 ```
 
 - **Zero install.** Python 3.9 standard library only — nothing to `pip install`.
 - **Nothing is deleted without you confirming it**, and deletions go to the
-  Trash unless you explicitly ask otherwise.
+  Trash unless you pass `--purge` and type `PURGE`.
 - **Honest totals.** Anything unreadable or skipped is counted and reported,
   never quietly dropped.
 - **Safe around cloud storage.** OneDrive and iCloud folders are skipped by
@@ -71,7 +71,8 @@ Running it with no arguments opens the menu:
 ```
 
 Type the number, or the word — `3`, `reclaim` and `rec` all work. Every flag
-below still works too, and passing any of them skips the menu.
+below still works too, and passing any of them (including `--path`) skips
+the menu.
 
 A fast scan takes about a minute on a full 250 GB disk. Option 2 opens the
 interactive browser:
@@ -85,12 +86,14 @@ interactive browser:
       5.9 GB  #.......................   6%  .vscode
       4.2 GB  #.......................   4%  Developer
 ───────────────────────────────────────────────────────────────────────
- ^v move   > enter   < up   d delete   f findings   r report   s sort   q quit
+ ^v move   > enter   < up   e expand   d delete   f findings   r report   s sort   q quit
 ```
 
 Press `f` for the findings list — everything reclaimable, biggest first.
 Press `r` to write a standalone HTML report with a treemap.
 Press `d` to delete the selected item, with confirmation scaled to the risk.
+A fast scan stops at depth 6 and marks those folders `…`. Press Enter or `e`
+on one to scan it fully, then browse as usual.
 
 ## Usage
 
@@ -102,13 +105,15 @@ macosscanner --report        write the HTML report and open it
 macosscanner --json          machine-readable output
 macosscanner --cached        reuse the previous scan, instantly
 macosscanner --diff          show what grew since the last scan
-macosscanner --path DIR      scan a specific directory (repeatable)
+macosscanner --path DIR      scan a specific directory (repeatable; skips the menu)
 macosscanner --reclaim       review every SAFE cache, then Trash them all at once
+macosscanner --purge         permanently delete instead of Trash (type PURGE)
 macosscanner --include-cloud scan OneDrive/iCloud too (slow; may download files)
 macosscanner --no-system     skip /Applications, /Library etc (~25s faster)
 macosscanner --dry-run       never modify anything
 macosscanner --workers N     parallel scan threads (default 8)
 macosscanner --no-progress   suppress the scanning progress line
+macosscanner --version       print the version and exit
 ```
 
 ### Reclaiming in bulk
@@ -119,13 +124,13 @@ them all to the Trash after a single confirmation:
 ```
 These 21 items are caches and build products that regenerate themselves:
 
-     14.8 GB  ~/Library/Developer/CoreSimulator/Devices
       7.9 GB  ~/.npm
       6.1 GB  ~/Library/Developer/Xcode/iOS DeviceSupport
+      4.2 GB  ~/.cache/uv
       ...
-     36.5 GB  total
+     18.2 GB  total
 
-Move all 21 to the Trash? [y/N]
+Move all 18 to the Trash? [y/N]
 ```
 
 It refuses to touch anything outside the SAFE tier even if a finding claims
@@ -160,6 +165,9 @@ Details worth knowing:
 - `RunAtLoad` is false, so installing it does not immediately start a scan.
 - It runs at `Nice 10` with `LowPriorityIO`, so it stays out of the way.
 - Output goes to `~/.local/state/storagescan/monitor.log`.
+- The launchd job runs a wrapper under `~/.local/libexec/storagescan`, not
+  the checkout. If you move or delete the clone it notifies you to run
+  `--install-agent` again.
 - Change the threshold with `--alert-below 30` (in GB).
 
 You can run the check by hand at any time with `macosscanner --check`.
@@ -189,7 +197,7 @@ Beyond the directory tree, `storagescan` probes the usual suspects:
 | Category | Examples |
 |---|---|
 | APFS | Local Time Machine snapshots, macOS update snapshots, unaccounted space |
-| Developer | Xcode DerivedData, Archives, iOS DeviceSupport, Simulator devices, `node_modules`, npm/pnpm/yarn/pip/cargo/Go/Gradle caches, Homebrew, Android SDK |
+| Developer | Xcode DerivedData, Archives, iOS DeviceSupport, Simulator caches, `node_modules`, npm/pnpm/yarn/pip/uv/bun/cargo/Go/Gradle caches, Homebrew, Android SDK, Hugging Face, Ollama |
 | Virtualization | Docker disk image, OrbStack, Parallels, UTM, VMware |
 | Apple apps | iOS device backups, Mail attachments, Photos library, browser caches |
 | General | Trash, Downloads, per-app caches, duplicate files, large stale files |
@@ -210,10 +218,17 @@ on its size or extension:
 
 An unmatched path is **Danger**, never Safe — the tool fails toward caution.
 
-Deletions move to the Trash by default. Every action is logged to
-`~/.local/state/storagescan/actions.log`. Snapshots are report-only:
-`storagescan` prints the `tmutil` command rather than running it, because that
-one cannot be undone from the Trash.
+Deletions move to the Trash by default. Files on another volume go to that
+volume's `.Trashes` folder — the same rule Finder uses — so a large image
+on a USB drive cannot fill the boot disk. Permanent delete (`--purge`, or
+`trash_by_default: false` in config) requires typing `PURGE` after the first
+`y`. Every action is logged to `~/.local/state/storagescan/actions.log`.
+Snapshots are report-only: `storagescan` prints the `tmutil` command rather
+than running it, because that one cannot be undone from the Trash.
+
+Simulator *caches* are Safe. The `Devices` folder is Review — deleting it
+wipes every simulator you have, not just unavailable ones. Prefer
+`xcrun simctl delete unavailable`.
 
 ## Where the space really goes
 
@@ -294,9 +309,10 @@ Optional, at `~/.config/storagescan/config.json`:
 python3 -m unittest discover -s tests -t . -v
 ```
 
-367 tests, no dependencies, no build step, no virtualenv. `safety.py` is pure
+407 tests, no dependencies, no build step, no virtualenv. `safety.py` is pure
 and carries an exhaustive table test — if you change deletion policy, that is
-the file and those are the tests.
+the file and those are the tests. GitHub Actions runs the same command on
+every push.
 
 ## Roadmap
 

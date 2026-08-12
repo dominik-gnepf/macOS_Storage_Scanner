@@ -62,6 +62,15 @@ class FindStaleTest(unittest.TestCase):
         sizes = [f.bytes_ for f in aging.find_stale(self.tmp, **self.kw)]
         self.assertEqual(sizes, sorted(sizes, reverse=True))
 
+    def test_excluded_directory_is_not_walked(self):
+        os.makedirs(os.path.join(self.tmp, "Library", "CloudStorage"))
+        self.write("keep.iso", 5000, 400)
+        self.write("Library/CloudStorage/stale.iso", 9000, 400)
+        cloud = os.path.join(self.tmp, "Library", "CloudStorage")
+        findings = aging.find_stale(self.tmp, exclude=(cloud,), **self.kw)
+        self.assertEqual([os.path.basename(f.path) for f in findings],
+                         ["keep.iso"])
+
 
 if __name__ == "__main__":
     unittest.main()

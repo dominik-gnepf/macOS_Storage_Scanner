@@ -15,8 +15,10 @@ from . import actions
 from . import config as config_module
 from . import monitor
 from . import serialize
+from . import __version__
 from .humanize import human_bytes, redact
 from .model import Node, Risk, ScanError, ScanResult
+from .safety import batch_allowed
 from .scan import aging, apfs, cloud, dupes, probes, system, walker
 from .scan.index import SizeIndex
 from .ui import report as report_module
@@ -30,7 +32,7 @@ EXIT_USAGE = 2
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="storagescan",
+        prog="macosscanner",
         description="Find where your macOS disk space went.",
         epilog="Run with no options for a menu. Nothing is ever deleted "
                "without you confirming it, and deletions go to the Trash.",
@@ -68,6 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reclaim", action="store_true",
                         help="review every SAFE cache and move them all to the "
                              "Trash after one confirmation")
+    parser.add_argument("--purge", action="store_true",
+                        help="permanently delete instead of moving to Trash "
+                             "(requires typing PURGE)")
     parser.add_argument("--dry-run", action="store_true",
                         help="never modify anything")
     parser.add_argument("--no-progress", action="store_true",
@@ -95,6 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default=None, metavar="FILE")
     parser.add_argument("--cache-file", default=None, metavar="FILE")
     parser.add_argument("--report-file", default=None, metavar="FILE")
+    parser.add_argument("--version", action="version",
+                        version="%(prog)s {}".format(__version__))
     return parser
 
 
@@ -257,13 +264,15 @@ def run_scan(cfg, args, *, home: str, now: float, progress=None) -> ScanResult:
     errors.extend(apfs_errors)
 
     if args.deep:
+        skipped = tuple(excludes)
         for root in roots:
             findings.extend(dupes.find_duplicates(
-                root, home=home, scan_roots=roots, errors=errors))
+                root, home=home, scan_roots=roots, errors=errors,
+                exclude=skipped))
             findings.extend(aging.find_stale(
                 root, home=home, scan_roots=roots,
                 min_bytes=cfg.large_file_bytes, stale_days=cfg.stale_days,
-                now=now, errors=errors))
+                now=now, errors=errors, exclude=skipped))
 
     return ScanResult(
         root=root_node,
@@ -297,6 +306,7 @@ def reclaimable_batch(result: ScanResult, home: str) -> Tuple:
         f for f in result.findings_by_size()
         if f.risk is Risk.SAFE and f.path and f.bytes_ > 0
         and os.path.lexists(f.path)
+        and batch_allowed(f.path, home)
     )
 
 
@@ -323,13 +333,22 @@ def run_reclaim(result: ScanResult, cfg, args, *, home: str,
         print("--dry-run: nothing was touched.", file=stdout)
         return EXIT_OK
 
-    destination = "the Trash" if cfg.trash_by_default else "PERMANENT deletion"
+    permanent = bool(getattr(args, "purge", False) or not cfg.trash_by_default)
+    destination = "PERMANENT deletion" if permanent else "the Trash"
     print("Move all {} to {}? [y/N] ".format(len(batch), destination),
           end="", file=stdout, flush=True)
     answer = stdin.readline().strip().lower()
     if not answer.startswith("y"):
         print("Nothing was deleted.", file=stdout)
         return EXIT_OK
+
+    if permanent:
+        print("This permanently deletes the files. They will NOT go to the "
+              "Trash.\nType PURGE to confirm: ",
+              end="", file=stdout, flush=True)
+        if stdin.readline().strip() != "PURGE":
+            print("Nothing was deleted.", file=stdout)
+            return EXIT_OK
 
     # One prompt covered the batch, so each item auto-confirms from here.
     # safety.classify still runs per path inside actions.perform, and anything
@@ -343,7 +362,7 @@ def run_reclaim(result: ScanResult, cfg, args, *, home: str,
         outcome = actions.perform(
             finding.path, home=home, scan_roots=cfg.expanded_scan_paths(),
             category=finding.category, confirm=confirmed,
-            use_trash=cfg.trash_by_default)
+            use_trash=not permanent, require_safe=True)
         if outcome.status in (actions.TRASHED, actions.PURGED):
             reclaimed += outcome.bytes_
         else:
@@ -381,25 +400,33 @@ _DIRECT_FLAGS = (
 )
 
 
-def wants_menu(args) -> bool:
+def wants_menu(args, *, stdin=None, stdout=None) -> bool:
     if args.no_menu:
         return False
     if args.menu:
         return True
-    if not sys.stdout.isatty() or not sys.stdin.isatty():
+    stdin = stdin or sys.stdin
+    stdout = stdout or sys.stdout
+    if not stdout.isatty() or not stdin.isatty():
+        return False
+    if args.path:
         return False
     return not any(getattr(args, name, False) for name in _DIRECT_FLAGS)
 
 
 def launcher_path() -> str:
-    """Absolute path to the bin/storagescan launcher for this checkout.
+    """Absolute path to the macosscanner launcher for this checkout.
 
     launchd has no working directory and no PATH to speak of, so the agent
-    must record an absolute path.
+    must record an absolute path. Symlinks are resolved so the plist points
+    at the real file; if you move the checkout, run --install-agent again.
     """
-    return os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "bin", "storagescan")
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in ("macosscanner", "storagescan"):
+        candidate = os.path.join(here, "bin", name)
+        if os.path.exists(candidate):
+            return os.path.realpath(candidate)
+    return os.path.join(here, "bin", "macosscanner")
 
 
 def run_agent_command(args, *, home: str, stdout=None) -> Optional[int]:
@@ -432,7 +459,8 @@ def run_agent_command(args, *, home: str, stdout=None) -> Optional[int]:
         print("Installed weekly check: {}\n"
               "It scans in the background and notifies you only when free "
               "space drops below the threshold.\n"
-              "Remove it any time with: storagescan --uninstall-agent"
+              "If you move this checkout, run --install-agent again.\n"
+              "Remove it any time with: macosscanner --uninstall-agent"
               .format(message), file=stdout)
         return EXIT_OK
 
@@ -442,6 +470,15 @@ def run_agent_command(args, *, home: str, stdout=None) -> Optional[int]:
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     home = os.path.expanduser("~")
+
+    # The launchd job sets this. A scheduled run is read-only even if the
+    # plist is later edited to pass --reclaim.
+    if os.environ.get("STORAGESCAN_SCHEDULED") == "1":
+        if args.reclaim or args.purge:
+            print("storagescan: scheduled runs are read-only", file=sys.stderr)
+            return EXIT_ERROR
+        args.check = True
+        args.no_menu = True
 
     agent_result = run_agent_command(args, home=home)
     if agent_result is not None:
@@ -529,7 +566,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return EXIT_OK
 
     from .ui import tui
-    tui.run(result, home=home, config=cfg)
+    updated = tui.run(result, home=home, config=cfg)
+    if updated is not None:
+        serialize.save(updated, args.cache_file)
     return EXIT_OK
 
 
@@ -583,7 +622,10 @@ def run_menu(cfg, args, *, home: str, stdin=None, stdout=None) -> int:
                 status = "Nothing scanned yet — choose 1 first."
                 continue
             from .ui import tui
-            tui.run(result, home=home, config=cfg)
+            updated = tui.run(result, home=home, config=cfg)
+            if updated is not None:
+                result = updated
+                serialize.save(result, args.cache_file)
             continue
 
         if choice.action == "report":

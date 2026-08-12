@@ -23,6 +23,8 @@ class RegistryTest(unittest.TestCase):
             "xcode.derived_data", "xcode.device_support", "ios.backups",
             "docker.image", "homebrew.cache", "npm.cache", "trash",
             "downloads", "node_modules", "mail.downloads", "photos.library",
+            "uv.cache", "bun.cache", "huggingface.cache", "ollama.models",
+            "xcode.simulator_devices", "xcode.simulator_caches",
         ]:
             self.assertIn(expected, categories)
 
@@ -66,6 +68,32 @@ class RunProbesTest(unittest.TestCase):
         build_tree(self.home, {"Library": {"Caches": {"Homebrew": {"tiny": 10}}}})
         findings = self.run_probes(min_bytes=10_000_000)
         self.assertEqual([f for f in findings if f.category == "homebrew.cache"], [])
+
+    def test_simulator_devices_are_review_caches_are_safe(self):
+        build_tree(self.home, {
+            "Library": {"Developer": {"CoreSimulator": {
+                "Caches": {"c": 50_000},
+                "Devices": {"iPhone": {"d": 50_000}},
+            }}},
+        })
+        findings = {f.category: f for f in self.run_probes()}
+        self.assertEqual(findings["xcode.simulator_caches"].risk, Risk.SAFE)
+        self.assertEqual(findings["xcode.simulator_devices"].risk, Risk.REVIEW)
+
+    def test_uv_and_huggingface_caches_are_safe(self):
+        build_tree(self.home, {
+            ".cache": {
+                "uv": {"x": 50_000},
+                "huggingface": {"y": 50_000},
+            },
+            ".bun": {"install": {"cache": {"z": 50_000}}},
+            ".ollama": {"models": {"blob": 50_000}},
+        })
+        findings = {f.category: f for f in self.run_probes()}
+        self.assertEqual(findings["uv.cache"].risk, Risk.SAFE)
+        self.assertEqual(findings["huggingface.cache"].risk, Risk.SAFE)
+        self.assertEqual(findings["bun.cache"].risk, Risk.SAFE)
+        self.assertEqual(findings["ollama.models"].risk, Risk.REVIEW)
 
     def test_downloads_is_review_not_safe(self):
         build_tree(self.home, {"Downloads": {"big.dmg": 50_000}})

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import plistlib
 import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -30,9 +31,11 @@ class PlistTest(unittest.TestCase):
         self.contents = monitor.plist_contents(
             launcher="/opt/storagescan/bin/storagescan", home=self.home)
 
-    def test_runs_the_launcher_in_check_mode(self):
+    def test_runs_the_wrapper_not_the_checkout(self):
+        # The plist must not point into the repo: if the clone moves,
+        # launchd would fail silently. The wrapper lives under $HOME.
         self.assertEqual(self.contents["ProgramArguments"],
-                         ["/opt/storagescan/bin/storagescan", "--check"])
+                         [monitor.wrapper_path(self.home)])
 
     def test_weekly_by_default(self):
         self.assertEqual(self.contents["StartInterval"], 7 * 24 * 60 * 60)
@@ -62,6 +65,7 @@ class PlistTest(unittest.TestCase):
     def test_agent_and_log_paths_derive_from_home(self):
         self.assertTrue(monitor.agent_path(self.home).startswith(self.home))
         self.assertTrue(monitor.log_path(self.home).startswith(self.home))
+        self.assertTrue(monitor.wrapper_path(self.home).startswith(self.home))
 
 
 class InstallTest(unittest.TestCase):
@@ -81,6 +85,7 @@ class InstallTest(unittest.TestCase):
                                    runner=self.runner())
         self.assertTrue(ok)
         self.assertTrue(os.path.exists(path))
+        self.assertTrue(os.path.exists(monitor.wrapper_path(self.home)))
         self.assertIn("bootstrap", [c[0] for c in self.calls])
 
     def test_unloads_any_previous_copy_first(self):
@@ -101,6 +106,7 @@ class InstallTest(unittest.TestCase):
         ok, _msg = monitor.uninstall(home=self.home, runner=self.runner())
         self.assertTrue(ok)
         self.assertFalse(monitor.is_installed(self.home))
+        self.assertFalse(os.path.exists(monitor.wrapper_path(self.home)))
 
     def test_uninstall_when_nothing_installed_is_not_an_error(self):
         ok, message = monitor.uninstall(home=self.home, runner=self.runner())
@@ -115,6 +121,31 @@ class InstallTest(unittest.TestCase):
                          "installed and loaded")
         self.assertEqual(monitor.status(self.home, runner=self.runner(1)),
                          "installed but not loaded")
+
+
+class WrapperTest(unittest.TestCase):
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+
+    def test_wrapper_is_executable_and_points_at_the_launcher(self):
+        path = monitor.wrapper_path(self.home)
+        monitor.write_wrapper(path, "/opt/macosscanner")
+        self.assertTrue(os.access(path, os.X_OK))
+        with open(path) as handle:
+            body = handle.read()
+        self.assertIn("/opt/macosscanner", body)
+        self.assertIn("--check", body)
+
+    def test_missing_launcher_exits_nonzero_with_a_message(self):
+        path = monitor.wrapper_path(self.home)
+        missing = os.path.join(self.home, "gone")
+        monitor.write_wrapper(path, missing)
+        proc = subprocess.run(
+            [path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=15)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(b"missing", proc.stdout)
 
 
 class AlertTest(unittest.TestCase):

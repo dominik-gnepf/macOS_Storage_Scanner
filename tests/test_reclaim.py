@@ -73,6 +73,13 @@ class ReclaimBatchTest(unittest.TestCase):
             Finding("homebrew.cache", "Homebrew", path, 0, Risk.SAFE)]), self.home)
         self.assertEqual(batch, ())
 
+    def test_excludes_user_media_even_with_a_safe_category(self):
+        path = self.make("Movies/vacation.mov")
+        batch = cli.reclaimable_batch(self.result([
+            Finding("homebrew.cache", "Homebrew", path, 100, Risk.SAFE)]),
+            self.home)
+        self.assertEqual(batch, ())
+
     def test_ordered_biggest_first(self):
         small = self.make("Library/Caches/pip/s.bin")
         big = self.make("Library/Caches/Homebrew/b.bin")
@@ -136,6 +143,19 @@ class RunReclaimTest(unittest.TestCase):
         self.assertTrue(os.path.exists(path))
         self.assertIn("Nothing was deleted", out)
 
+    def test_purge_requires_the_word_purge(self):
+        finding, path = self.safe_finding("Library/Caches/Homebrew/a.bin")
+        _code, out = self.run_it([finding], "y\nnope\n", extra_argv=["--purge"])
+        self.assertTrue(os.path.exists(path))
+        self.assertIn("Nothing was deleted", out)
+
+    def test_purge_deletes_permanently_after_the_phrase(self):
+        finding, path = self.safe_finding("Library/Caches/Homebrew/a.bin")
+        self.run_it([finding], "y\nPURGE\n", extra_argv=["--purge"])
+        self.assertFalse(os.path.exists(path))
+        self.assertFalse(os.path.exists(
+            os.path.join(self.home, ".Trash", "a.bin")))
+
     def test_dry_run_never_prompts_or_deletes(self):
         finding, path = self.safe_finding("Library/Caches/Homebrew/a.bin")
         _code, out = self.run_it([finding], "y\n", extra_argv=["--dry-run"])
@@ -167,18 +187,37 @@ class RunReclaimTest(unittest.TestCase):
         victim = self.make("Documents/thesis.txt", 500)
         smuggled = Finding("homebrew.cache", "Homebrew downloads",
                            os.path.join(self.home, "Documents"), 500, Risk.SAFE)
+        self.run_it([smuggled], "y\n")
+        self.assertTrue(os.path.exists(victim))
+        self.assertFalse(os.path.lexists(
+            os.path.join(self.home, ".Trash", "Documents")))
+
+    def test_a_smuggled_safe_category_on_movies_is_still_refused(self):
+        # Category wins over location in classify: Movies + homebrew.cache
+        # is SAFE. Bulk reclaim must not trust that — a probe bug or a
+        # tampered cache must not send a vacation video to the Trash.
+        victim = self.make("Movies/vacation.mov", 500)
+        smuggled = Finding("homebrew.cache", "Homebrew downloads",
+                           victim, 500, Risk.SAFE)
+        self.run_it([smuggled], "y\n")
+        self.assertTrue(os.path.exists(victim))
+        self.assertFalse(os.path.lexists(
+            os.path.join(self.home, ".Trash", "vacation.mov")))
+
+    def test_reclassify_refuses_a_review_item_labelled_safe(self):
+        victim = self.make("Downloads/installer.dmg", 500)
+        smuggled = Finding("downloads", "Downloads", victim, 500, Risk.SAFE)
         _code, out = self.run_it([smuggled], "y\n")
         self.assertTrue(os.path.exists(victim))
         self.assertIn("could not be removed", out)
 
     def test_failures_are_reported_and_do_not_stop_the_rest(self):
         good, good_path = self.safe_finding("Library/Caches/pip/b.bin")
-        smuggled = Finding("homebrew.cache", "Homebrew",
-                           os.path.join(self.home, "Desktop"), 100, Risk.SAFE)
-        os.makedirs(os.path.join(self.home, "Desktop"), exist_ok=True)
+        victim = self.make("Downloads/installer.dmg", 100)
+        smuggled = Finding("downloads", "Downloads", victim, 100, Risk.SAFE)
         _code, out = self.run_it([smuggled, good], "y\n")
         self.assertFalse(os.path.exists(good_path))
-        self.assertTrue(os.path.isdir(os.path.join(self.home, "Desktop")))
+        self.assertTrue(os.path.exists(victim))
         self.assertIn("could not be removed", out)
 
 

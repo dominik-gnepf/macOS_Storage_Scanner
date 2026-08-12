@@ -25,7 +25,7 @@ class LauncherTest(unittest.TestCase):
     def test_help_passes_through_to_python(self):
         proc = run(["--help"])
         self.assertEqual(proc.returncode, 0)
-        self.assertIn(b"storagescan", proc.stdout)
+        self.assertIn(b"macosscanner", proc.stdout)
         self.assertIn(b"--deep", proc.stdout)
 
     def test_works_from_an_unrelated_working_directory(self):

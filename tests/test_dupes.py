@@ -78,6 +78,19 @@ class FindDuplicatesTest(unittest.TestCase):
         # Unreadable content means no hash, so no group — but no crash either.
         dupes.find_duplicates(self.tmp, errors=errors, **self.kw)
 
+    def test_excluded_directory_is_not_walked(self):
+        payload = b"A" * 5000
+        self.write("keep/a.bin", payload)
+        self.write("keep/b.bin", payload)
+        self.write("Library/CloudStorage/X/a.bin", payload)
+        self.write("Library/CloudStorage/X/b.bin", payload)
+        cloud = os.path.join(self.tmp, "Library", "CloudStorage")
+        findings = dupes.find_duplicates(
+            self.tmp, exclude=(cloud,), **self.kw)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("~/keep/", findings[0].detail)
+        self.assertNotIn("CloudStorage", findings[0].detail)
+
 
 if __name__ == "__main__":
     unittest.main()

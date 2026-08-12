@@ -56,6 +56,17 @@ class TierTest(unittest.TestCase):
     def test_safe_categories(self):
         self.assertEqual(classify(HOME + "/Library/Caches/pip", "pip.cache"), Risk.SAFE)
         self.assertEqual(classify(HOME + "/.Trash/old", "trash"), Risk.SAFE)
+        self.assertEqual(classify(HOME + "/.cache/uv", "uv.cache"), Risk.SAFE)
+
+    def test_simulator_devices_are_review(self):
+        self.assertEqual(
+            classify(HOME + "/Library/Developer/CoreSimulator/Devices",
+                     "xcode.simulator_devices"),
+            Risk.REVIEW)
+        self.assertEqual(
+            classify(HOME + "/Library/Developer/CoreSimulator/Caches",
+                     "xcode.simulator_caches"),
+            Risk.SAFE)
 
     def test_review_categories(self):
         self.assertEqual(classify(HOME + "/Downloads/x.dmg", "downloads"), Risk.REVIEW)
@@ -73,6 +84,25 @@ class TierTest(unittest.TestCase):
         self.assertEqual(classify(HOME + "/Library/Caches/huge.bin", "pip.cache"),
                          Risk.SAFE)
         self.assertEqual(classify(HOME + "/Movies/tiny.tmp", None), Risk.DANGER)
+
+
+class BatchAllowedTest(unittest.TestCase):
+    def test_caches_are_allowed(self):
+        self.assertTrue(safety.batch_allowed(
+            HOME + "/Library/Caches/Homebrew", HOME))
+
+    def test_user_media_is_not(self):
+        for path in [
+            HOME + "/Movies",
+            HOME + "/Movies/vacation.mov",
+            HOME + "/Pictures/img.jpg",
+            HOME + "/Documents/thesis.txt",
+            HOME + "/Desktop/notes.txt",
+        ]:
+            self.assertFalse(safety.batch_allowed(path, HOME), path)
+
+    def test_sibling_prefix_does_not_match(self):
+        self.assertTrue(safety.batch_allowed(HOME + "/MoviesArchive/x", HOME))
 
 
 class ConfirmationTest(unittest.TestCase):

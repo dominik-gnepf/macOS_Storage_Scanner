@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import shlex
 import subprocess
 from typing import List, Optional, Sequence, Tuple
 
@@ -40,6 +41,43 @@ def log_path(home: str) -> str:
     return os.path.join(home, ".local", "state", "storagescan", "monitor.log")
 
 
+def wrapper_path(home: str) -> str:
+    """A small script that lives outside the checkout.
+
+    The plist cannot point at the repo launcher directly: if the clone is
+    moved or deleted, launchd fails silently. This wrapper stays put and
+    tells the user to reinstall.
+    """
+    return os.path.join(home, ".local", "libexec", "storagescan", "check")
+
+
+def write_wrapper(path: str, launcher: str) -> str:
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    notice = (
+        'display notification '
+        '"macosscanner was moved. Run macosscanner --install-agent again." '
+        'with title "macosscanner"'
+    )
+    body = (
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        "launcher={launcher}\n"
+        'if [ ! -x "$launcher" ]; then\n'
+        "  /usr/bin/osascript -e {notice} >/dev/null 2>&1 || true\n"
+        '  echo "macosscanner launcher missing: $launcher" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        "export STORAGESCAN_SCHEDULED=1\n"
+        'exec "$launcher" --check\n'
+    ).format(launcher=shlex.quote(launcher), notice=shlex.quote(notice))
+    with open(path, "w") as handle:
+        handle.write(body)
+    os.chmod(path, 0o755)
+    return path
+
+
 def plist_contents(
     *,
     launcher: str,
@@ -59,7 +97,7 @@ def plist_contents(
     """
     return {
         "Label": label,
-        "ProgramArguments": [launcher, "--check"],
+        "ProgramArguments": [wrapper_path(home)],
         "StartInterval": int(interval),
         "RunAtLoad": False,
         # Nice values keep the scan out of the way of anything interactive.
@@ -96,6 +134,7 @@ def install(*, launcher: str, home: str, interval: int = DEFAULT_INTERVAL_SECOND
     """Write the plist and load it. Returns (ok, message)."""
     run = runner or _launchctl
     path = agent_path(home)
+    write_wrapper(wrapper_path(home), launcher)
     write_plist(path, plist_contents(launcher=launcher, home=home,
                                      interval=interval))
     os.makedirs(os.path.dirname(log_path(home)), exist_ok=True)
@@ -119,6 +158,10 @@ def uninstall(*, home: str, runner=None) -> Tuple[bool, str]:
     try:
         os.remove(path)
         removed = True
+    except OSError:
+        pass
+    try:
+        os.remove(wrapper_path(home))
     except OSError:
         pass
     return True, ("removed {}".format(path) if removed

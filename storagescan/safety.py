@@ -35,6 +35,9 @@ SAFE_CATEGORIES = frozenset({
     "xcode.simulator_caches",
     "browser.cache",
     "app.cache",
+    "uv.cache",
+    "bun.cache",
+    "huggingface.cache",
 })
 
 REVIEW_CATEGORIES = frozenset({
@@ -50,6 +53,8 @@ REVIEW_CATEGORIES = frozenset({
     "aging.stale",
     "dupes.copy",
     "node_modules",
+    "xcode.simulator_devices",
+    "ollama.models",
 })
 
 # Deliberately absent from both sets, so they classify as DANGER and require
@@ -64,6 +69,29 @@ _ROOT_LEVEL_BLOCKED = frozenset({
 def _norm(path: str) -> str:
     """Normalize lexically. Never touches the filesystem, never reads links."""
     return posixpath.normpath(path)
+
+
+# Folders whose contents stay out of bulk reclaim even when a SAFE category
+# is attached. classify() still lets category win — an interactive delete
+# of a mislabelled cache is a single `y` — but one `y` on a batch must not.
+_BATCH_FORBIDDEN = ("Movies", "Pictures", "Music", "Photos",
+                    "Documents", "Desktop")
+
+
+def batch_allowed(path: str, home: str) -> bool:
+    """False for user-media and document folders.
+
+    Bulk reclaim auto-confirms. A probe bug or a tampered cache must not be
+    able to put ``homebrew.cache`` on ``~/Movies/vacation.mov`` and have
+    that file go to the Trash with the rest of the caches.
+    """
+    path = _norm(path)
+    home = _norm(home)
+    for name in _BATCH_FORBIDDEN:
+        base = posixpath.join(home, name)
+        if path == base or path.startswith(base + "/"):
+            return False
+    return True
 
 
 def blocked_dirs(home: str) -> frozenset:

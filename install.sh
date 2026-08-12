@@ -35,6 +35,10 @@ if [ -e "$target" ] && [ ! -L "$target" ]; then
 fi
 
 ln -sf "$launcher" "$target"
+legacy="$target_dir/storagescan"
+if [ ! -e "$legacy" ] || [ -L "$legacy" ]; then
+  ln -sfn macosscanner "$legacy"
+fi
 echo "Linked  $target  ->  $launcher"
 
 case ":$PATH:" in

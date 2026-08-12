@@ -43,6 +43,22 @@ class PerformTest(unittest.TestCase):
         self.assertFalse(os.path.exists(path))
         self.assertTrue(os.path.exists(os.path.join(self.trash, "a.bin")))
 
+    def test_require_safe_refuses_a_review_path(self):
+        path = self.make("Downloads/a.dmg")
+        outcome = actions.perform(
+            path, category="downloads", confirm=always,
+            require_safe=True, **self.kw)
+        self.assertEqual(outcome.status, actions.REFUSED)
+        self.assertTrue(os.path.exists(path))
+
+    def test_require_safe_refuses_user_media_even_with_a_safe_category(self):
+        path = self.make("Movies/vacation.mov")
+        outcome = actions.perform(
+            path, category="homebrew.cache", confirm=always,
+            require_safe=True, **self.kw)
+        self.assertEqual(outcome.status, actions.REFUSED)
+        self.assertTrue(os.path.exists(path))
+
     def test_blocked_path_is_refused_without_prompting(self):
         prompted = []
 
@@ -89,13 +105,36 @@ class PerformTest(unittest.TestCase):
         self.assertFalse(os.path.exists(path))
         self.assertFalse(os.path.exists(os.path.join(self.trash, "a.bin")))
 
+    def test_measure_reports_on_disk_bytes(self):
+        path = self.make("Library/Caches/Homebrew/a.bin", 1)
+        on_disk = os.lstat(path).st_blocks * 512
+        self.assertEqual(actions.measure(path), on_disk)
+        self.assertNotEqual(actions.measure(path), 1)
+
+    def test_aborts_if_the_path_is_replaced_during_confirm(self):
+        path = self.make("Library/Caches/Homebrew/a.bin")
+
+        def confirm(_path, _risk, _mode):
+            os.remove(path)
+            with open(path, "wb") as handle:
+                handle.write(b"replaced-with-something-else")
+            return True
+
+        outcome = actions.perform(path, category="homebrew.cache",
+                                  confirm=confirm, **self.kw)
+        self.assertEqual(outcome.status, actions.CHANGED)
+        self.assertTrue(os.path.exists(path))
+        with open(path, "rb") as handle:
+            self.assertEqual(handle.read(), b"replaced-with-something-else")
+
     def test_directory_is_trashed_whole(self):
         self.make("Library/Caches/Homebrew/inner/a.bin", 500)
         target = os.path.join(self.home, "Library/Caches/Homebrew")
         outcome = actions.perform(target, category="homebrew.cache",
                                   confirm=always, **self.kw)
         self.assertEqual(outcome.status, actions.TRASHED)
-        self.assertEqual(outcome.bytes_, 500)
+        self.assertEqual(outcome.bytes_, actions.measure(
+            os.path.join(self.trash, "Homebrew")))
         self.assertTrue(os.path.isdir(os.path.join(self.trash, "Homebrew")))
 
     def test_symlink_is_refused_and_target_survives(self):
@@ -167,11 +206,60 @@ class TrashPathTest(unittest.TestCase):
         self.assertNotEqual(result, os.path.join(self.tmp, "c.txt"))
         self.assertTrue(result.endswith(".txt"))
 
+    def test_same_second_collision_does_not_reuse_the_stamped_name(self):
+        with open(os.path.join(self.tmp, "c.txt"), "w") as handle:
+            handle.write("first")
+        stamped = actions.trash_path("/a/b/c.txt", trash_dir=self.tmp)
+        with open(stamped, "w") as handle:
+            handle.write("second")
+        again = actions.trash_path("/a/b/c.txt", trash_dir=self.tmp)
+        self.assertNotEqual(again, os.path.join(self.tmp, "c.txt"))
+        self.assertNotEqual(again, stamped)
+        self.assertTrue(again.endswith(".txt"))
+        self.assertFalse(os.path.lexists(again))
+
     def test_trailing_slash_on_directories(self):
         self.assertEqual(actions.trash_path("/a/b/dir/", trash_dir=self.tmp),
                          os.path.join(self.tmp, "dir"))
 
 
+
+
+class TrashDirForTest(unittest.TestCase):
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+        self.other = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.other, ignore_errors=True)
+
+    def test_same_volume_uses_home_trash(self):
+        path = os.path.join(self.home, "a.bin")
+        with open(path, "w") as handle:
+            handle.write("x")
+        self.assertEqual(actions.trash_dir_for(path, self.home),
+                         os.path.join(self.home, ".Trash"))
+
+    def test_other_volume_uses_dot_trashes_on_that_volume(self):
+        path = os.path.join(self.other, "big.img")
+        with open(path, "w") as handle:
+            handle.write("x")
+        original = actions._device
+        other_root = os.path.abspath(self.other)
+
+        def fake(p):
+            if os.path.abspath(p) == other_root or os.path.abspath(p).startswith(
+                    other_root + os.sep):
+                return 99
+            return 1
+
+        actions._device = fake
+        try:
+            chosen = actions.trash_dir_for(path, self.home)
+        finally:
+            actions._device = original
+        self.assertEqual(
+            chosen,
+            os.path.join(self.other, ".Trashes", str(os.getuid())))
 
 
 class ConfinementTest(unittest.TestCase):

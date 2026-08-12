@@ -36,6 +36,16 @@ class ParserTest(unittest.TestCase):
         args = cli.build_parser().parse_args(["--path", "/a", "--path", "/b"])
         self.assertEqual(args.path, ["/a", "/b"])
 
+    def test_version_prints_and_exits_zero(self):
+        out = io.StringIO()
+        with redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
+            cli.build_parser().parse_args(["--version"])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertIn("0.2.0", out.getvalue())
+
+    def test_purge_flag(self):
+        self.assertTrue(cli.build_parser().parse_args(["--purge"]).purge)
+
     def test_bad_flag_exits_two(self):
         with self.assertRaises(SystemExit) as ctx:
             with redirect_stderr(io.StringIO()):
@@ -134,6 +144,57 @@ class RunScanTest(unittest.TestCase):
         self.assertGreaterEqual(result.root.apparent, 50_000_000)
         self.assertNotIn("cloud.folder", {f.category for f in result.findings})
 
+    def test_deep_scan_does_not_walk_cloud_folders(self):
+        payload = b"D" * 1_200_000
+        cloud = os.path.join(self.home, "Library", "CloudStorage", "X")
+        os.makedirs(cloud)
+        for name in ("a.bin", "b.bin"):
+            with open(os.path.join(cloud, name), "wb") as handle:
+                handle.write(payload)
+        result = self.scan(["--deep"])
+        for finding in result.findings:
+            if finding.category != "dupes.copy":
+                continue
+            self.assertNotIn("CloudStorage", finding.detail or "")
+            self.assertNotIn("CloudStorage", finding.path or "")
+
+
+class WantsMenuTest(unittest.TestCase):
+    class TTY:
+        def isatty(self):
+            return True
+
+    class Pipe:
+        def isatty(self):
+            return False
+
+    def parse(self, argv):
+        return cli.build_parser().parse_args(argv)
+
+    def test_bare_invocation_on_a_tty_wants_the_menu(self):
+        self.assertTrue(cli.wants_menu(
+            self.parse([]), stdin=self.TTY(), stdout=self.TTY()))
+
+    def test_path_skips_the_menu(self):
+        self.assertFalse(cli.wants_menu(
+            self.parse(["--path", "/tmp"]), stdin=self.TTY(), stdout=self.TTY()))
+
+    def test_menu_flag_wins_over_path(self):
+        self.assertTrue(cli.wants_menu(
+            self.parse(["--path", "/tmp", "--menu"]),
+            stdin=self.TTY(), stdout=self.TTY()))
+
+    def test_pipe_skips_the_menu(self):
+        self.assertFalse(cli.wants_menu(
+            self.parse([]), stdin=self.Pipe(), stdout=self.TTY()))
+
+
+class LauncherPathTest(unittest.TestCase):
+    def test_resolves_to_macosscanner(self):
+        path = cli.launcher_path()
+        self.assertTrue(os.path.exists(path))
+        self.assertEqual(os.path.basename(path), "macosscanner")
+
 
 class ScopeTest(unittest.TestCase):
     def test_home_inside_roots_is_covered(self):
@@ -209,6 +270,15 @@ class MainTest(unittest.TestCase):
             ["--report", "--report-file", target, "--no-open"])
         self.assertEqual(code, cli.EXIT_OK)
         self.assertTrue(os.path.exists(target))
+
+    def test_scheduled_env_refuses_reclaim(self):
+        os.environ["STORAGESCAN_SCHEDULED"] = "1"
+        self.addCleanup(os.environ.pop, "STORAGESCAN_SCHEDULED", None)
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = cli.main(self.argv(["--reclaim"]))
+        self.assertEqual(code, cli.EXIT_ERROR)
+        self.assertIn("read-only", err.getvalue())
 
     def test_bad_config_returns_error_not_traceback(self):
         bad = os.path.join(self.home, "bad.json")

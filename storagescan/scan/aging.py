@@ -9,6 +9,7 @@ from ..humanize import human_age
 from ..model import Finding, ScanError
 from ..safety import classify
 from .cloud import is_dataless
+from .walker import _excluded, prune_dirnames
 
 _DAY = 86400.0
 
@@ -22,6 +23,7 @@ def find_stale(
     stale_days: int,
     now: float,
     errors: Optional[List[ScanError]] = None,
+    exclude: Sequence[str] = (),
 ) -> Tuple[Finding, ...]:
     """Files of at least ``min_bytes`` untouched for ``stale_days``.
 
@@ -31,9 +33,15 @@ def find_stale(
     cutoff = now - stale_days * _DAY
     findings: List[Finding] = []
 
-    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        prune_dirnames(dirpath, dirnames, exclude)
+        if _excluded(dirpath, exclude):
+            dirnames[:] = []
+            continue
         for name in filenames:
             path = os.path.join(dirpath, name)
+            if _excluded(path, exclude):
+                continue
             try:
                 st = os.lstat(path)
             except OSError as exc:

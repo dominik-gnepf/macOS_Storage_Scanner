@@ -11,11 +11,13 @@ import curses
 import os
 import subprocess
 import time
-from typing import Optional, Tuple
+from dataclasses import replace
+from typing import Optional, Sequence, Tuple
 
 from .. import actions
 from ..humanize import human_bytes, redact
 from ..model import Finding, Node, Risk, ScanResult
+from ..scan import cloud, walker
 from . import report as report_module
 
 MIN_SIZE = (60, 15)
@@ -27,7 +29,7 @@ RISK_MARK = {
     Risk.BLOCKED: "----",
 }
 
-HELP = ("^v move   > enter   < up   d delete   f findings   "
+HELP = ("^v move   > enter   < up   e expand   d delete   f findings   "
         "r report   s sort   q quit")
 
 
@@ -92,6 +94,70 @@ class TreeState:
         node = self.current_dir()
         return redact(node.path, home) if node is not None else "(no scan)"
 
+    def replace_current(self, new_node: Node) -> None:
+        """Swap the selected folder for a freshly walked one."""
+        row = self.current()
+        if not isinstance(row, Node) or self.result.root is None:
+            return
+        root = _replace_node(self.result.root, row.path, new_node)
+        self.result = replace(self.result, root=root)
+        self._restack(root)
+
+    def remove_current(self) -> None:
+        """Drop the selected row after a successful trash.
+
+        Nodes are frozen, so the tree is rebuilt with that child gone and
+        ancestor totals reduced. Findings lose the matching entry. The
+        stack is rewritten to the new nodes so later navigation stays
+        attached to the live tree.
+        """
+        row = self.current()
+        if row is None:
+            return
+        path = getattr(row, "path", None)
+        if not path:
+            return
+
+        findings = self.result.findings
+        if isinstance(row, Finding):
+            findings = tuple(f for f in findings if f is not row)
+        else:
+            prefix = path.rstrip("/") + "/"
+            findings = tuple(
+                f for f in findings
+                if f.path != path and not (f.path or "").startswith(prefix)
+            )
+
+        root = self.result.root
+        if root is not None:
+            root = _without_node(root, path)
+        self.result = replace(self.result, root=root, findings=findings)
+        self._restack(root)
+        rows = self.rows()
+        if rows:
+            self.index = min(self.index, len(rows) - 1)
+        else:
+            self.index = 0
+
+    def _restack(self, root: Optional[Node]) -> None:
+        if root is None:
+            self.stack = []
+            return
+        by_path = {}
+
+        def visit(node: Node) -> None:
+            by_path[node.path] = node
+            for child in node.children:
+                visit(child)
+
+        visit(root)
+        rebuilt = []
+        for old in self.stack:
+            if old.path not in by_path:
+                break
+            rebuilt.append(by_path[old.path])
+        self.stack = rebuilt or [root]
+
     def percentage_base(self) -> int:
         """The whole that each row's percentage is a share of.
 
@@ -105,6 +171,86 @@ class TreeState:
             return sum(f.bytes_ for f in self.result.findings)
         node = self.current_dir()
         return node.size if node is not None else 0
+
+
+def _replace_node(node: Node, path: str, new: Node) -> Node:
+    """Return ``node`` with the child at ``path`` replaced by ``new``."""
+    if node.path == path:
+        return new
+    children = []
+    size_delta = app_delta = count_delta = 0
+    for child in node.children:
+        if child.path == path:
+            size_delta += new.size - child.size
+            app_delta += new.apparent - child.apparent
+            count_delta += new.count - child.count
+            children.append(new)
+            continue
+        if path.startswith(child.path.rstrip("/") + "/"):
+            updated = _replace_node(child, path, new)
+            size_delta += updated.size - child.size
+            app_delta += updated.apparent - child.apparent
+            count_delta += updated.count - child.count
+            children.append(updated)
+        else:
+            children.append(child)
+    return Node(
+        path=node.path,
+        size=max(0, node.size + size_delta),
+        apparent=max(0, node.apparent + app_delta),
+        count=max(0, node.count + count_delta),
+        mtime=node.mtime,
+        children=tuple(children),
+        truncated=node.truncated,
+        unreadable=node.unreadable,
+    )
+
+
+def expand_selected(state: TreeState, *, exclude: Sequence[str] = ()) -> str:
+    """Walk the selected truncated folder with no depth limit."""
+    row = state.current()
+    if not isinstance(row, Node):
+        return "Select a folder to scan deeper."
+    if not row.truncated:
+        return "Already fully scanned."
+    new = walker.walk(row.path, exclude=exclude)
+    state.replace_current(new)
+    return "Scanned {}".format(os.path.basename(row.path) or row.path)
+
+
+def _without_node(node: Node, path: str) -> Node:
+    """Return ``node`` with ``path`` removed and subtree totals reduced."""
+    if node.path == path:
+        return Node(path=node.path, size=0, apparent=0, count=0,
+                    mtime=node.mtime, truncated=node.truncated,
+                    unreadable=node.unreadable)
+
+    children = []
+    size_delta = app_delta = count_delta = 0
+    for child in node.children:
+        if child.path == path:
+            size_delta += child.size
+            app_delta += child.apparent
+            count_delta += child.count
+            continue
+        if path.startswith(child.path.rstrip("/") + "/"):
+            updated = _without_node(child, path)
+            size_delta += child.size - updated.size
+            app_delta += child.apparent - updated.apparent
+            count_delta += child.count - updated.count
+            children.append(updated)
+        else:
+            children.append(child)
+    return Node(
+        path=node.path,
+        size=max(0, node.size - size_delta),
+        apparent=max(0, node.apparent - app_delta),
+        count=max(0, node.count - count_delta),
+        mtime=node.mtime,
+        children=tuple(children),
+        truncated=node.truncated,
+        unreadable=node.unreadable,
+    )
 
 
 def row_size(row) -> int:
@@ -143,6 +289,8 @@ def format_row(row, *, home: str, total: int, scale: int, width: int) -> str:
     else:
         redacted = redact(row.path, home)
         label = os.path.basename(redacted) or redacted
+        if row.truncated:
+            label = label + " …"
 
     if len(label) > room:
         # Keep the tail: for a path, the end identifies it, not the start.
@@ -176,18 +324,20 @@ def _prompt(stdscr, message: str) -> str:
         curses.curs_set(0)
 
 
-def _confirm_factory(stdscr, home):
+def _confirm_factory(stdscr, home, use_trash=True):
     """Build the confirmation callback the escalating tiers require."""
+    dest = "Trash" if use_trash else "permanent deletion"
 
     def confirm(path: str, risk: Risk, mode: str) -> bool:
         shown = redact(path, home)
         if mode == "single":
-            answer = _prompt(stdscr, "Delete {} to Trash? [y/N] ".format(shown))
+            answer = _prompt(stdscr, "Delete {} to {}? [y/N] ".format(
+                shown, dest))
             return answer.strip().lower().startswith("y")
         if mode == "recap":
             size = human_bytes(actions.measure(path))
-            answer = _prompt(stdscr, "Delete {} ({}) to Trash? [y/N] ".format(
-                shown, size))
+            answer = _prompt(stdscr, "Delete {} ({}) to {}? [y/N] ".format(
+                shown, size, dest))
             return answer.strip().lower().startswith("y")
         if mode == "retype":
             typed = _prompt(
@@ -252,16 +402,24 @@ def _delete_selected(stdscr, state: TreeState, home: str, config) -> str:
     if not path:
         return "This finding has no deletable path."
 
+    use_trash = config.trash_by_default
+    if not use_trash:
+        typed = _prompt(stdscr, "PERMANENT delete — type PURGE to confirm: ")
+        if typed.strip() != "PURGE":
+            return "Cancelled."
+
     outcome = actions.perform(
         path, home=home, scan_roots=config.expanded_scan_paths(),
-        category=category, confirm=_confirm_factory(stdscr, home),
-        use_trash=config.trash_by_default)
+        category=category, confirm=_confirm_factory(stdscr, home, use_trash),
+        use_trash=use_trash)
 
     if outcome.status == actions.REFUSED:
         return "Refused: {}".format(outcome.message)
-    if outcome.status == actions.TRASHED:
-        return "Moved to Trash: {} ({})".format(
-            redact(outcome.path, home), human_bytes(outcome.bytes_))
+    if outcome.status in (actions.TRASHED, actions.PURGED):
+        state.remove_current()
+        verb = "Moved to Trash" if outcome.status == actions.TRASHED else "Purged"
+        return "{}: {} ({})".format(
+            verb, redact(outcome.path, home), human_bytes(outcome.bytes_))
     return "{}: {}".format(outcome.status, redact(outcome.path, home))
 
 
@@ -269,6 +427,8 @@ def _loop(stdscr, result: ScanResult, home: str, config) -> None:
     curses.curs_set(0)
     state = TreeState(result)
     status = ""
+    excludes = list(config.expanded_excludes())
+    excludes.extend(cloud.cloud_roots(home))
 
     while True:
         height, width = stdscr.getmaxyx()
@@ -278,7 +438,7 @@ def _loop(stdscr, result: ScanResult, home: str, config) -> None:
                            .format(*MIN_SIZE), max(1, width - 1))
             stdscr.refresh()
             if stdscr.getch() in (ord("q"), 27):
-                return
+                return state.result
             continue
 
         _draw(stdscr, state, home, status)
@@ -286,7 +446,7 @@ def _loop(stdscr, result: ScanResult, home: str, config) -> None:
         key = stdscr.getch()
 
         if key in (ord("q"), 27):
-            return
+            return state.result
         if key in (curses.KEY_DOWN, ord("j")):
             state.select(1)
         elif key in (curses.KEY_UP, ord("k")):
@@ -296,9 +456,14 @@ def _loop(stdscr, result: ScanResult, home: str, config) -> None:
         elif key in (curses.KEY_PPAGE,):
             state.select(-max(1, height - 5))
         elif key in (curses.KEY_RIGHT, ord("l"), 10, 13):
+            row = state.current()
+            if isinstance(row, Node) and row.truncated:
+                status = expand_selected(state, exclude=tuple(excludes))
             state.enter()
         elif key in (curses.KEY_LEFT, ord("h")):
             state.up()
+        elif key == ord("e"):
+            status = expand_selected(state, exclude=tuple(excludes))
         elif key == ord("s"):
             state.toggle_sort()
         elif key == ord("f"):
@@ -311,5 +476,6 @@ def _loop(stdscr, result: ScanResult, home: str, config) -> None:
             status = _delete_selected(stdscr, state, home, config)
 
 
-def run(result: ScanResult, *, home: str, config) -> None:
-    curses.wrapper(_loop, result, home, config)
+def run(result: ScanResult, *, home: str, config) -> ScanResult:
+    """Browse the tree. Returns the live result, including any deletes."""
+    return curses.wrapper(_loop, result, home, config)
