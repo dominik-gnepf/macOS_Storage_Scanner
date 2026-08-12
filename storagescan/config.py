@@ -19,7 +19,7 @@ class Config:
     scan_paths: Tuple[str, ...] = ("~/",)
     exclude: Tuple[str, ...] = ()
     fast_depth: int = 6
-    large_file_bytes: int = 1_073_741_824
+    large_file_bytes: int = 100_000_000
     stale_days: int = 180
     trash_by_default: bool = True
 

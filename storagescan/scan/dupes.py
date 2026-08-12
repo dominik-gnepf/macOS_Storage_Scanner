@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import os
 from collections import defaultdict
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from ..humanize import redact
 from ..model import Finding, ScanError
@@ -52,10 +52,12 @@ def find_duplicates(
     min_bytes: int = 1_048_576,
     errors: Optional[List[ScanError]] = None,
     exclude: Sequence[str] = (),
+    on_progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> Tuple[Finding, ...]:
     """Groups of byte-identical files, one Finding per group."""
     by_size: Dict[int, List[str]] = defaultdict(list)
     seen_inodes = set()
+    seen = 0
 
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         prune_dirnames(dirpath, dirnames, exclude)
@@ -66,6 +68,9 @@ def find_duplicates(
             path = os.path.join(dirpath, name)
             if _excluded(path, exclude):
                 continue
+            seen += 1
+            if on_progress is not None and seen % 25 == 0:
+                on_progress(seen, 0, path)
             try:
                 st = os.lstat(path)
             except OSError as exc:
@@ -90,6 +95,9 @@ def find_duplicates(
             continue
         by_head: Dict[str, List[str]] = defaultdict(list)
         for path in paths:
+            if on_progress is not None:
+                seen += 1
+                on_progress(seen, 0, path)
             head = _hash_file(path, _HEAD_BYTES)
             if head is not None:
                 by_head[head].append(path)

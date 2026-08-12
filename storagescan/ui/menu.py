@@ -46,7 +46,7 @@ ITEMS: Tuple[Item, ...] = (
     Item("4", "report", "Save an HTML report",
          "a shareable page with a treemap"),
     Item("5", "deep", "Deep scan",
-         "also find duplicate and long-untouched files (slower)"),
+         "find duplicates and large untouched files (a few minutes more)"),
     Item("6", "access", "Grant Full Disk Access",
          "open the right System Settings pane"),
     Item("7", "monitor", "Weekly early warning",
@@ -113,10 +113,22 @@ def reclaimable_line(result: Optional[ScanResult], color: bool = True) -> str:
     if result is None:
         return ""
     safe = result.reclaimable(Risk.SAFE)
-    if safe <= 0:
+    extra = 0
+    if result.mode == "deep":
+        extra = sum(
+            f.bytes_ for f in result.findings
+            if f.category in ("dupes.copy", "aging.stale")
+        )
+    parts = []
+    if safe > 0:
+        parts.append("{} in caches and build files".format(
+            _paint(human_bytes(safe), GREEN, color)))
+    if extra > 0:
+        parts.append("{} in duplicates and old files".format(
+            human_bytes(extra)))
+    if not parts:
         return ""
-    return "Reclaimable  {} in caches and build files".format(
-        _paint(human_bytes(safe), GREEN, color))
+    return "Reclaimable  " + ", ".join(parts)
 
 
 def render(result: Optional[ScanResult], *, now: float, color: bool = True,

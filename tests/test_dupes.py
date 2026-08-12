@@ -78,6 +78,16 @@ class FindDuplicatesTest(unittest.TestCase):
         # Unreadable content means no hash, so no group — but no crash either.
         dupes.find_duplicates(self.tmp, errors=errors, **self.kw)
 
+    def test_reports_progress_while_walking(self):
+        for index in range(30):
+            self.write("f{}.bin".format(index), b"A" * 2000)
+        ticks = []
+        dupes.find_duplicates(
+            self.tmp, on_progress=lambda done, _total, _path: ticks.append(done),
+            **self.kw)
+        self.assertTrue(ticks)
+        self.assertGreaterEqual(max(ticks), 25)
+
     def test_excluded_directory_is_not_walked(self):
         payload = b"A" * 5000
         self.write("keep/a.bin", payload)

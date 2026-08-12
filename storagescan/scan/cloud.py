@@ -20,6 +20,7 @@ and any code that opens files must skip dataless ones.
 
 from __future__ import annotations
 
+import glob
 import os
 import time
 from typing import Callable, List, Optional, Sequence, Tuple
@@ -33,6 +34,8 @@ SF_DATALESS = 0x40000000
 CLOUD_PATTERNS: Tuple[str, ...] = (
     "Library/CloudStorage",      # OneDrive, Box, Google Drive, Dropbox (modern)
     "Library/Mobile Documents",  # iCloud Drive
+    "Library/Group Containers/*OneDrive*",
+    "Library/Group Containers/*Dropbox*",
     "Dropbox",
     "Google Drive",
 )
@@ -51,9 +54,9 @@ def cloud_roots(home: str) -> Tuple[str, ...]:
     """Cloud directories that exist on this machine."""
     found: List[str] = []
     for pattern in CLOUD_PATTERNS:
-        path = os.path.join(home, pattern)
-        if os.path.isdir(path) and not os.path.islink(path):
-            found.append(path)
+        for path in sorted(glob.glob(os.path.join(home, pattern))):
+            if os.path.isdir(path) and not os.path.islink(path):
+                found.append(path)
     return tuple(found)
 
 

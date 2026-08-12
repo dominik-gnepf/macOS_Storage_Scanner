@@ -149,6 +149,16 @@ class ParallelSpecificsTest(unittest.TestCase):
         self.assertEqual(node.count, 2)
         self.assertEqual(node.apparent, 8000)
 
+    def test_progress_starts_immediately_and_ticks_per_directory(self):
+        build_tree(self.tmp, {"a": {"b": {"f": 1}}, "c": {"f": 1}})
+        seen = []
+        walker.walk_parallel(
+            self.tmp, workers=2,
+            on_progress=lambda done, total, path: seen.append((done, path)))
+        self.assertGreaterEqual(len(seen), 3)
+        self.assertEqual(seen[0][0], 0)
+        self.assertTrue(any(done > 0 for done, _path in seen))
+
     def test_children_are_returned_for_every_subdirectory(self):
         build_tree(self.tmp, {"a": {"f": 1}, "b": {"f": 1}, "c": {"f": 1}})
         node = walker.walk_parallel(self.tmp, workers=4)

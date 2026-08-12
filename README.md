@@ -62,7 +62,7 @@ Running it with no arguments opens the menu:
   2  Browse the last scan     open the interactive browser (instant)
   3  Reclaim safe space       review caches and build files, then Trash them
   4  Save an HTML report      a shareable page with a treemap
-  5  Deep scan                also find duplicate and long-untouched files
+  5  Deep scan                find duplicates and large untouched files
   6  Grant Full Disk Access   open the right System Settings pane
   7  Weekly early warning     get notified before the disk fills up
   q  Quit
@@ -93,13 +93,16 @@ Press `f` for the findings list — everything reclaimable, biggest first.
 Press `r` to write a standalone HTML report with a treemap.
 Press `d` to delete the selected item, with confirmation scaled to the risk.
 A fast scan stops at depth 6 and marks those folders `…`. Press Enter or `e`
-on one to scan it fully, then browse as usual.
+on one to scan it fully, then browse as usual. A **deep scan** does not try
+to open every folder — that hangs for hours inside OneDrive and simulator
+trees. It walks the same tree, then looks for duplicate files and large
+files you have not touched in months.
 
 ## Usage
 
 ```
 macosscanner                fast scan, then the interactive browser
-macosscanner --deep          unlimited depth, plus duplicates and stale files
+macosscanner --deep          also find duplicates and large untouched files
 macosscanner --summary       plain text summary instead of the browser
 macosscanner --report        write the HTML report and open it
 macosscanner --json          machine-readable output
@@ -297,7 +300,7 @@ Optional, at `~/.config/storagescan/config.json`:
   "scan_paths": ["~/", "/Applications"],
   "exclude": ["~/Library/CloudStorage"],
   "fast_depth": 6,
-  "large_file_bytes": 1073741824,
+  "large_file_bytes": 100000000,
   "stale_days": 180,
   "trash_by_default": true
 }
@@ -309,7 +312,7 @@ Optional, at `~/.config/storagescan/config.json`:
 python3 -m unittest discover -s tests -t . -v
 ```
 
-407 tests, no dependencies, no build step, no virtualenv. `safety.py` is pure
+414 tests, no dependencies, no build step, no virtualenv. `safety.py` is pure
 and carries an exhaustive table test — if you change deletion policy, that is
 the file and those are the tests. GitHub Actions runs the same command on
 every push.

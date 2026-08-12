@@ -7,6 +7,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import sys
+import threading
 import time
 from typing import List, Optional, Tuple
 
@@ -38,8 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
                "without you confirming it, and deletions go to the Trash.",
     )
     parser.add_argument("--deep", action="store_true",
-                        help="unlimited depth, plus duplicate and stale-file "
-                             "analysis (slower)")
+                        help="also find duplicate and large untouched files "
+                             "(slower)")
     parser.add_argument("--menu", action="store_true",
                         help="show the menu (the default when run with no "
                              "options)")
@@ -182,21 +183,50 @@ def make_progress(stream, home: str, enabled: bool):
     if not enabled or not hasattr(stream, "isatty") or not stream.isatty():
         return None
 
+    lock = threading.Lock()
+    last = [0.0]
+
     def report(done: int, total: int, path: str) -> None:
-        name = redact(path, home)
-        if len(name) > 40:
-            name = "~" + name[-39:]
-        stream.write("\r\033[2K  scanning {}/{}  {}".format(done, total, name))
-        stream.flush()
-        if done == total:
-            stream.write("\r\033[2K")
+        now = time.monotonic()
+        with lock:
+            if total and done == total:
+                pass
+            elif done and now - last[0] < 0.08:
+                return
+            last[0] = now
+            name = redact(path, home)
+            if len(name) > 40:
+                name = "~" + name[-39:]
+            if total:
+                text = "scanning {}/{}  {}".format(done, total, name)
+            else:
+                text = "scanning {}  {}".format(done, name)
+            stream.write("\r\033[2K  {}".format(text))
             stream.flush()
+            if total and done == total:
+                stream.write("\r\033[2K")
+                stream.flush()
 
     return report
 
 
-def run_scan(cfg, args, *, home: str, now: float, progress=None) -> ScanResult:
+def make_phase(stream):
+    """Print a one-line status for the current scan phase, or None."""
+    if not hasattr(stream, "isatty") or not stream.isatty():
+        return None
+
+    def say(message: str) -> None:
+        stream.write("\r\033[2K  {}\n".format(message))
+        stream.flush()
+
+    return say
+
+
+def run_scan(cfg, args, *, home: str, now: float, progress=None,
+             on_phase=None) -> ScanResult:
     started = time.time()
+    if on_phase is not None:
+        on_phase("Scanning folders…")
     errors: List[ScanError] = []
     roots = _scan_roots(cfg, args, home)
     scanning_home = _covers_home(roots, home)
@@ -207,7 +237,12 @@ def run_scan(cfg, args, *, home: str, now: float, progress=None) -> ScanResult:
         skipped_cloud = cloud.cloud_roots(home)
         excludes.extend(skipped_cloud)
 
-    max_depth = None if args.deep else cfg.fast_depth
+    # Deep scan is analysis (duplicates, stale files), not an unlimited
+    # tree. A full-home walk with no depth limit tries to materialize every
+    # directory — 20k+ truncated folders on a typical Mac, including File
+    # Provider trees that answer readdir over the network. Press `e` in the
+    # browser to expand one folder instead.
+    max_depth = cfg.fast_depth
 
     # The system areas are entirely separate trees from the home directory, so
     # measuring them while the home walk runs costs no extra wall time. Done
@@ -265,14 +300,19 @@ def run_scan(cfg, args, *, home: str, now: float, progress=None) -> ScanResult:
 
     if args.deep:
         skipped = tuple(excludes)
+        if on_phase is not None:
+            on_phase("Looking for duplicate files…")
         for root in roots:
             findings.extend(dupes.find_duplicates(
                 root, home=home, scan_roots=roots, errors=errors,
-                exclude=skipped))
+                exclude=skipped, on_progress=progress))
+        if on_phase is not None:
+            on_phase("Looking for large untouched files…")
+        for root in roots:
             findings.extend(aging.find_stale(
                 root, home=home, scan_roots=roots,
                 min_bytes=cfg.large_file_bytes, stale_days=cfg.stale_days,
-                now=now, errors=errors, exclude=skipped))
+                now=now, errors=errors, exclude=skipped, on_progress=progress))
 
     return ScanResult(
         root=root_node,
@@ -513,12 +553,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         progress = make_progress(sys.stderr, home,
                                  enabled=not args.no_progress and not args.json)
-        if progress is None and not args.json:
+        phase = make_phase(sys.stderr) if not args.no_progress and not args.json else None
+        if progress is None and phase is None and not args.json:
             print("Scanning... (first run on a full disk can take a minute)",
                   file=sys.stderr)
         try:
             result = run_scan(cfg, args, home=home, now=time.time(),
-                              progress=progress)
+                              progress=progress, on_phase=phase)
         except OSError as exc:
             print("storagescan: scan failed: {}".format(exc), file=sys.stderr)
             return EXIT_ERROR
@@ -581,8 +622,9 @@ def _menu_scan(cfg, args, home: str, deep: bool):
     scan_args.no_system = args.no_system
     scan_args.path = args.path
     progress = make_progress(sys.stderr, home, enabled=not args.no_progress)
+    phase = make_phase(sys.stderr) if not args.no_progress else None
     result = run_scan(cfg, scan_args, home=home, now=time.time(),
-                      progress=progress)
+                      progress=progress, on_phase=phase)
     serialize.save(result, args.cache_file)
     return result
 

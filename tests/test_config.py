@@ -31,7 +31,7 @@ class LoadTest(unittest.TestCase):
         cfg = config.load(path)
         self.assertEqual(cfg.fast_depth, 3)
         self.assertEqual(cfg.stale_days, 30)
-        self.assertEqual(cfg.large_file_bytes, 1_073_741_824)
+        self.assertEqual(cfg.large_file_bytes, 100_000_000)
 
     def test_unknown_keys_are_ignored(self):
         path = self.write(json.dumps({"fast_depth": 2, "wat": True}))

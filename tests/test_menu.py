@@ -66,6 +66,19 @@ class RenderTest(unittest.TestCase):
     def test_shows_reclaimable_total(self):
         self.assertIn("36.1 GB", menu.render(result(), now=NOW, color=False))
 
+    def test_deep_scan_mentions_duplicates_and_old_files(self):
+        text = menu.render(result(
+            mode="deep",
+            findings=(
+                Finding("homebrew.cache", "Homebrew", "/h/c",
+                        36_100_000_000, Risk.SAFE),
+                Finding("dupes.copy", "2 identical copies", "/h/a.bin",
+                        2_400_000_000, Risk.REVIEW),
+            ),
+        ), now=NOW, color=False)
+        self.assertIn("2.4 GB", text)
+        self.assertIn("duplicates", text)
+
     def test_warns_when_access_is_missing(self):
         text = menu.render(
             result(fda_ok=False,

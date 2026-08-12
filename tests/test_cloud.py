@@ -46,6 +46,14 @@ class CloudRootsTest(unittest.TestCase):
     def test_no_cloud_directories_yields_empty(self):
         self.assertEqual(cloud.cloud_roots(self.home), ())
 
+    def test_finds_onedrive_in_group_containers(self):
+        path = os.path.join(
+            self.home, "Library", "Group Containers",
+            "UBF8T346G9.OneDriveStandaloneSuite")
+        os.makedirs(path)
+        roots = cloud.cloud_roots(self.home)
+        self.assertIn(path, roots)
+
     def test_symlinked_cloud_root_is_ignored(self):
         # ~/OneDrive is a symlink into Library/CloudStorage on a real machine;
         # following it would scan the same tree twice.

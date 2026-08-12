@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from ..humanize import human_age
 from ..model import Finding, ScanError
@@ -24,6 +24,7 @@ def find_stale(
     now: float,
     errors: Optional[List[ScanError]] = None,
     exclude: Sequence[str] = (),
+    on_progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> Tuple[Finding, ...]:
     """Files of at least ``min_bytes`` untouched for ``stale_days``.
 
@@ -32,6 +33,7 @@ def find_stale(
     """
     cutoff = now - stale_days * _DAY
     findings: List[Finding] = []
+    seen = 0
 
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         prune_dirnames(dirpath, dirnames, exclude)
@@ -42,6 +44,9 @@ def find_stale(
             path = os.path.join(dirpath, name)
             if _excluded(path, exclude):
                 continue
+            seen += 1
+            if on_progress is not None and seen % 25 == 0:
+                on_progress(seen, 0, path)
             try:
                 st = os.lstat(path)
             except OSError as exc:

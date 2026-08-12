@@ -9,6 +9,7 @@ counted once per inode.
 from __future__ import annotations
 
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -106,6 +107,7 @@ def walk(
     max_depth: Optional[int] = None,
     exclude: Sequence[str] = (),
     errors: Optional[List[ScanError]] = None,
+    on_dir: Optional[Callable[[str], None]] = None,
 ) -> Node:
     """Build a Node tree rooted at ``root``.
 
@@ -142,6 +144,9 @@ def walk(
                 mtime=partial.mtime, children=children, unreadable=unreadable,
             )
             continue
+
+        if on_dir is not None:
+            on_dir(path)
 
         try:
             mtime = os.lstat(path).st_mtime
@@ -267,21 +272,30 @@ def walk_parallel(
     if subdirs:
         child_depth = None if max_depth is None else max(0, max_depth - 1)
         collected: List[List[ScanError]] = []
+        visited = [0]
+        lock = threading.Lock()
+
+        def on_dir(path: str) -> None:
+            if on_progress is None:
+                return
+            with lock:
+                visited[0] += 1
+                n = visited[0]
+            on_progress(n, 0, path)
 
         def run(path: str) -> Node:
             local_errors: List[ScanError] = []
             collected.append(local_errors)
             return walk(path, max_depth=child_depth, exclude=exclude,
-                        errors=local_errors)
+                        errors=local_errors, on_dir=on_dir)
+
+        if on_progress is not None:
+            on_progress(0, 0, root)
 
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             futures = {pool.submit(run, path): path for path in subdirs}
-            for done, future in enumerate(as_completed(futures), start=1):
+            for future in as_completed(futures):
                 children.append(future.result())
-                if on_progress is not None:
-                    # Reported from this thread, not the workers, so the
-                    # callback never needs to be thread-safe.
-                    on_progress(done, len(subdirs), futures[future])
 
         if errors is not None:
             for batch in collected:

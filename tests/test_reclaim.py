@@ -240,6 +240,14 @@ class ProgressTest(unittest.TestCase):
         self.assertIn("~/Library", stream.getvalue())
         self.assertNotIn("/h/Library", stream.getvalue())
 
+    def test_unknown_total_shows_a_running_count(self):
+        stream = self.FakeTTY()
+        report = cli.make_progress(stream, "/h", enabled=True)
+        report(847, 0, "/h/Library/Caches")
+        self.assertIn("847", stream.getvalue())
+        self.assertIn("~/Library/Caches", stream.getvalue())
+        self.assertNotIn("/847", stream.getvalue())
+
     def test_clears_the_line_when_finished(self):
         stream = self.FakeTTY()
         report = cli.make_progress(stream, "/h", enabled=True)

@@ -116,6 +116,39 @@ class RunScanTest(unittest.TestCase):
     def test_deep_mode_is_labelled(self):
         self.assertEqual(self.scan(["--deep"]).mode, "deep")
 
+    def test_deep_scan_reports_duplicates_and_stale_files(self):
+        payload = b"D" * 1_500_000
+        os.makedirs(os.path.join(self.home, "a"))
+        os.makedirs(os.path.join(self.home, "b"))
+        for name in ("a/one.bin", "b/two.bin"):
+            with open(os.path.join(self.home, name), "wb") as handle:
+                handle.write(payload)
+        stale = os.path.join(self.home, "old.iso")
+        with open(stale, "wb") as handle:
+            handle.write(b"S" * 1_500_000)
+        os.utime(stale, (1_000_000_000.0, 1_000_000_000.0))
+
+        cfg = Config(scan_paths=(self.home,), fast_depth=4,
+                     large_file_bytes=1_000_000, stale_days=180)
+        args = cli.build_parser().parse_args(["--deep"])
+        result = cli.run_scan(cfg, args, home=self.home, now=1_800_000_000.0)
+        categories = {f.category for f in result.findings}
+        self.assertIn("dupes.copy", categories)
+        self.assertIn("aging.stale", categories)
+
+    def test_deep_scan_does_not_materialize_the_whole_tree(self):
+        # Unlimited depth is what made deep scan hang: this machine's fast
+        # scan already had 21k truncated folders, including a File Provider
+        # tree. Deep should analyse files, not build a node for every dir.
+        build_tree(self.home, {"w": {"x": {"y": {"z": {"leaf": 100}}}}})
+        result = self.scan(["--deep"])
+        node = result.root
+        for name in ("w", "x", "y", "z"):
+            node = next(c for c in node.children
+                        if os.path.basename(c.path) == name)
+        self.assertTrue(node.truncated)
+        self.assertEqual(node.children, ())
+
     def test_scan_never_raises_on_unreadable_paths(self):
         secret = os.path.join(self.home, "secret")
         os.makedirs(secret)
